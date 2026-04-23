@@ -1,0 +1,57 @@
+{
+  "nes": {
+    "name": "Nintendo Entertainment System",
+    "extensions": [".nes"],
+    "core": "nestopia_libretro"
+  },
+  "snes": {
+    "name": "Super Nintendo",
+    "extensions": [".sfc", ".smc"],
+    "core": "snes9x_libretro"
+  },
+  "gb": {
+    "name": "Game Boy",
+    "extensions": [".gb"],
+    "core": "gambatte_libretro"
+  },
+  "gbc": {
+    "name": "Game Boy Color",
+    "extensions": [".gbc"],
+    "core": "gambatte_libretro"
+  },
+  "gba": {
+    "name": "Game Boy Advance",
+    "extensions": [".gba"],
+    "core": "mgba_libretro"
+  },
+  "n64": {
+    "name": "Nintendo 64",
+    "extensions": [".n64", ".z64", ".v64"],
+    "core": "mupen64plus_next_libretro"
+  },
+  "nds": {
+    "name": "Nintendo DS",
+    "extensions": [".nds"],
+    "core": "desmume_libretro"
+  },
+  "genesis": {
+    "name": "Sega Genesis",
+    "extensions": [".md", ".gen", ".bin"],
+    "core": "genesis_plus_gx_libretro"
+  },
+  "psx": {
+    "name": "PlayStation",
+    "extensions": [".bin", ".cue", ".iso", ".pbp"],
+    "core": "pcsx_rearmed_libretro"
+  },
+  "psp": {
+    "name": "PlayStation Portable",
+    "extensions": [".iso", ".cso", ".pbp"],
+    "core": "ppsspp_libretro"
+  },
+  "arcade": {
+    "name": "Arcade",
+    "extensions": [".zip"],
+    "core": "fbneo_libretro"
+  }
+}

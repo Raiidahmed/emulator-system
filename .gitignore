@@ -1,0 +1,6 @@
+roms/**/*
+!roms/**/
+cores/*.dylib
+__pycache__/
+*.pyc
+.DS_Store

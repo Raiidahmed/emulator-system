@@ -1,0 +1,5 @@
+{
+  "retroarch_path": "/Applications/RetroArch.app/Contents/MacOS/RetroArch",
+  "roms_dir": "roms",
+  "cores_dir": "cores"
+}
