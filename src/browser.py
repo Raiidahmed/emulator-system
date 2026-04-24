@@ -9,10 +9,30 @@ import threading
 import time
 from pathlib import Path
 
+try:
+    import Foundation
+    import objc
+except ImportError:
+    Foundation = None
+    objc = None
+
 ROOT = Path(__file__).resolve().parent.parent
 SAVES_DIR = ROOT / "saves"
 
 from src.cli import get_config, get_systems, get_settings, save_settings
+
+
+GAMECONTROLLER_AVAILABLE = False
+if objc is not None:
+    try:
+        objc.loadBundle(
+            "GameController",
+            globals(),
+            bundle_path="/System/Library/Frameworks/GameController.framework",
+        )
+        GAMECONTROLLER_AVAILABLE = True
+    except Exception:
+        GAMECONTROLLER_AVAILABLE = False
 
 
 # ── save state helpers ──────────────────────────────────────────────
@@ -39,49 +59,77 @@ def has_save_state(system_key, rom):
     return result
 
 
+def _retroarch_base_config():
+    """Read the user's RetroArch config as a dict of key=value pairs."""
+    config = get_config()
+    ra_cfg = Path(config["retroarch_path"]).parent.parent / "Resources" / "retroarch.cfg"
+    # macOS app bundle doesn't store config there; check standard location
+    for candidate in [
+        Path.home() / "Library/Application Support/RetroArch/config/retroarch.cfg",
+        ra_cfg,
+    ]:
+        if candidate.exists():
+            lines = {}
+            with open(candidate) as f:
+                for line in f:
+                    line = line.strip()
+                    if "=" in line and not line.startswith("#"):
+                        k, _, v = line.partition("=")
+                        lines[k.strip()] = v.strip()
+            return lines
+    return {}
+
+
 def write_retroarch_config(system_key, channel=None):
     save_dir = ensure_saves_dir(system_key)
     settings = get_settings()
-    content = (
-        f'savestate_auto_save = "true"\n'
-        f'savestate_auto_load = "true"\n'
-        f'savestate_directory = "{save_dir}"\n'
-        f'network_cmd_enable = "true"\n'
-        f'network_cmd_port = "55355"\n'
-        f'audio_volume = "{settings["audio_volume"]:.1f}"\n'
-    )
+
+    # start from the user's base RetroArch config
+    base = _retroarch_base_config()
+
+    # apply our overrides
+    overrides = {
+        "savestate_auto_save": '"true"',
+        "savestate_auto_load": '"true"',
+        "savestate_directory": f'"{save_dir}"',
+        "network_cmd_enable": '"true"',
+        "network_cmd_port": '"55355"',
+        "audio_volume": f'"{settings["audio_volume"]:.1f}"',
+        "config_save_on_exit": '"false"',
+    }
+
     overlay_mode = settings.get("overlay_mode", "fade")
     if channel is not None and overlay_mode != "off":
         overlay_cfg = OVERLAY_DIR / f"ch_{channel:02d}.cfg"
         if overlay_cfg.exists():
-            content += (
-                f'input_overlay_enable = "true"\n'
-                f'input_overlay = "{overlay_cfg}"\n'
-                f'input_overlay_opacity = "1.0"\n'
-                f'input_overlay_scale = "1.0"\n'
-                f'input_overlay_show_inputs = "0"\n'
-            )
+            overrides["input_overlay_enable"] = '"true"'
+            overrides["input_overlay"] = f'"{overlay_cfg}"'
+            overrides["input_overlay_opacity"] = '"1.0"'
+            overrides["input_overlay_scale"] = '"1.0"'
+            overrides["input_overlay_show_inputs"] = '"0"'
     else:
-        content += f'input_overlay_enable = "false"\n'
+        overrides["input_overlay_enable"] = '"false"'
+
     # inject input mappings for this system
     mappings_cfg = settings.get("input_mappings", {}).get(system_key, {})
     device_type = mappings_cfg.get("device", "keyboard")
     btn_map = mappings_cfg.get(device_type, {})
     if btn_map:
-        # disable autoconfig so our bindings aren't overridden
-        content += f'input_autodetect_enable = "false"\n'
+        overrides["input_autodetect_enable"] = '"false"'
         for btn, val in btn_map.items():
             if device_type == "keyboard":
-                content += f'input_player1_{btn} = "{val}"\n'
-                # clear joypad bindings so they don't conflict
-                content += f'input_player1_{btn}_btn = "nul"\n'
-                content += f'input_player1_{btn}_axis = "nul"\n'
+                overrides[f"input_player1_{btn}"] = f'"{val}"'
+                overrides[f"input_player1_{btn}_btn"] = '"nul"'
+                overrides[f"input_player1_{btn}_axis"] = '"nul"'
             else:
-                content += f'input_player1_{btn}_btn = "{val}"\n'
+                overrides[f"input_player1_{btn}_btn"] = f'"{val}"'
+
+    base.update(overrides)
 
     fd, path = tempfile.mkstemp(suffix=".cfg", prefix="emu_")
     with os.fdopen(fd, "w") as f:
-        f.write(content)
+        for k, v in base.items():
+            f.write(f"{k} = {v}\n")
     return path
 
 
@@ -191,7 +239,7 @@ def start_game(rom, system_key, system_info, channel=None):
 
     cfg = write_retroarch_config(system_key, channel=channel)
     proc = subprocess.Popen(
-        [retroarch, "-L", core_path, str(rom), "--appendconfig", cfg],
+        [retroarch, "-L", core_path, str(rom), "--config", cfg],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -362,6 +410,23 @@ DEFAULT_GAMEPAD = {
     "start": "9", "select": "8",
 }
 
+GAMEPAD_BUTTON_CODES = {
+    "dpad_up": "h0up",
+    "dpad_down": "h0down",
+    "dpad_left": "h0left",
+    "dpad_right": "h0right",
+    "buttonA": "0",
+    "buttonB": "1",
+    "buttonX": "2",
+    "buttonY": "3",
+    "leftShoulder": "4",
+    "rightShoulder": "5",
+    "leftTrigger": "6",
+    "rightTrigger": "7",
+    "buttonOptions": "8",
+    "buttonMenu": "9",
+}
+
 # display names for RetroArch key values
 RA_KEY_DISPLAY = {
     "up": "\u2191", "down": "\u2193", "left": "\u2190", "right": "\u2192",
@@ -390,6 +455,16 @@ def _curses_to_ra_key(keycode):
 
 def _detect_controllers():
     devices = ["Keyboard"]
+    seen = set(devices)
+
+    for name in _game_controller_names():
+        if name not in seen:
+            devices.append(name)
+            seen.add(name)
+
+    if len(devices) > 1 or GAMECONTROLLER_AVAILABLE:
+        return devices
+
     try:
         result = subprocess.run(
             ["system_profiler", "SPBluetoothDataType", "-json"],
@@ -402,10 +477,95 @@ def _detect_controllers():
                 for name, info in dev_group.items():
                     minor = info.get("device_minorType", "")
                     if "gamepad" in minor.lower() or "controller" in minor.lower() or "joystick" in minor.lower():
-                        devices.append(name)
+                        if name not in seen:
+                            devices.append(name)
+                            seen.add(name)
     except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError, KeyError):
         pass
     return devices
+
+
+def _game_controller_names():
+    return [_controller_name(controller) for controller in _connected_gamepads()]
+
+
+def _connected_gamepads():
+    if not GAMECONTROLLER_AVAILABLE:
+        return []
+    try:
+        controllers = list(GCController.controllers())
+    except Exception:
+        return []
+    result = []
+    for controller in controllers:
+        if _controller_profile(controller) is not None:
+            result.append(controller)
+    return result
+
+
+def _controller_profile(controller):
+    return controller.extendedGamepad() or controller.microGamepad()
+
+
+def _controller_name(controller):
+    name = controller.vendorName() or getattr(controller, "productCategory", lambda: None)()
+    return str(name or "Controller")
+
+
+def _pump_controller_events():
+    if Foundation is None or not GAMECONTROLLER_AVAILABLE:
+        return
+    run_loop = Foundation.NSRunLoop.currentRunLoop()
+    until = Foundation.NSDate.dateWithTimeIntervalSinceNow_(0.01)
+    run_loop.runMode_beforeDate_(Foundation.NSDefaultRunLoopMode, until)
+
+
+def _controller_for_device(device_name):
+    matches = [controller for controller in _connected_gamepads()
+               if _controller_name(controller) == device_name]
+    if matches:
+        return matches[0]
+    return None
+
+
+def _read_gamepad_state(device_name):
+    controller = _controller_for_device(device_name)
+    if controller is None:
+        return {}
+
+    _pump_controller_events()
+    profile = _controller_profile(controller)
+    if profile is None:
+        return {}
+
+    state = {}
+
+    dpad = getattr(profile, "dpad", lambda: None)()
+    if dpad is not None:
+        state["h0up"] = bool(dpad.up().isPressed())
+        state["h0down"] = bool(dpad.down().isPressed())
+        state["h0left"] = bool(dpad.left().isPressed())
+        state["h0right"] = bool(dpad.right().isPressed())
+
+    for attr, code in GAMEPAD_BUTTON_CODES.items():
+        if attr.startswith("dpad_"):
+            continue
+        getter = getattr(profile, attr, None)
+        if getter is None:
+            continue
+        element = getter()
+        if element is not None:
+            state[code] = bool(element.isPressed())
+
+    return state
+
+
+def _capture_gamepad_binding(device_name, baseline):
+    current = _read_gamepad_state(device_name)
+    for code, pressed in current.items():
+        if pressed and not baseline.get(code, False):
+            return code, current
+    return None, current
 
 
 def _get_mapping(system_key, device):
@@ -777,7 +937,7 @@ def draw_controls(stdscr, system_name, buttons, mapping, device_name,
         )
 
     if capturing:
-        hint = " Press a key to bind (esc to cancel) "
+        hint = " Press a key or button to bind (esc to cancel) "
     else:
         hint = " [\u2191\u2193] navigate  [enter] remap  [\u2190\u2192] device  [esc] save & back "
     stdscr.attron(curses.A_DIM)
@@ -810,6 +970,8 @@ def run(stdscr):
     controls_mapping = {}
     controls_capturing = False
     controls_system_key = None
+    controls_capture_device = None
+    controls_capture_state = {}
 
     while True:
         _reap_if_exited()
@@ -908,6 +1070,20 @@ def run(stdscr):
         key = stdscr.getch()
 
         if key == -1:
+            if level == "controls_buttons" and controls_capturing and controls_capture_device is not None:
+                buttons = SYSTEM_BUTTONS.get(controls_system_key, SYSTEM_BUTTONS["snes"])
+                all_items = ["automap"] + buttons
+                ra_key, controls_capture_state = _capture_gamepad_binding(
+                    controls_capture_device, controls_capture_state
+                )
+                if ra_key:
+                    btn = all_items[cursor]
+                    controls_mapping[btn] = ra_key
+                    controls_capturing = False
+                    controls_capture_device = None
+                    controls_capture_state = {}
+                    stdscr.timeout(1000)
+                continue
             refresh_tick += 1
             if refresh_tick >= 5:
                 rebuild_items = True
@@ -973,16 +1149,31 @@ def run(stdscr):
             all_items = ["automap"] + buttons
 
             if controls_capturing:
-                # capture mode: any key binds the selected button
+                # capture mode: keyboard keys or controller buttons bind the selected button
                 if key == 27:
                     controls_capturing = False
+                    controls_capture_device = None
+                    controls_capture_state = {}
                     stdscr.timeout(1000)
+                elif controls_capture_device is not None:
+                    ra_key, controls_capture_state = _capture_gamepad_binding(
+                        controls_capture_device, controls_capture_state
+                    )
+                    if ra_key:
+                        btn = all_items[cursor]
+                        controls_mapping[btn] = ra_key
+                        controls_capturing = False
+                        controls_capture_device = None
+                        controls_capture_state = {}
+                        stdscr.timeout(1000)
                 else:
                     ra_key = _curses_to_ra_key(key)
                     if ra_key:
                         btn = all_items[cursor]
                         controls_mapping[btn] = ra_key
                     controls_capturing = False
+                    controls_capture_device = None
+                    controls_capture_state = {}
                     stdscr.timeout(1000)
                 continue
 
@@ -1010,7 +1201,15 @@ def run(stdscr):
                 else:
                     # enter capture mode for this button
                     controls_capturing = True
-                    stdscr.timeout(-1)
+                    device = controls_devices[controls_device_idx]
+                    if device == "Keyboard":
+                        controls_capture_device = None
+                        controls_capture_state = {}
+                        stdscr.timeout(-1)
+                    else:
+                        controls_capture_device = device
+                        controls_capture_state = _read_gamepad_state(device)
+                        stdscr.timeout(50)
             elif key == 27 or key == curses.KEY_BACKSPACE:
                 # save and go back
                 device = controls_devices[controls_device_idx]
@@ -1018,6 +1217,8 @@ def run(stdscr):
                 level = "controls_system"
                 cursor = 0
                 rebuild_items = True
+                controls_capture_device = None
+                controls_capture_state = {}
             continue
 
         # ── shared navigation for list levels ──

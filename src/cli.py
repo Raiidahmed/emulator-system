@@ -129,9 +129,18 @@ def launch(system, game):
     else:
         core_path = core_name
 
-    cmd = [retroarch, "-L", core_path, str(rom)]
+    from src.browser import write_retroarch_config
+
+    cfg = write_retroarch_config(system)
+    cmd = [retroarch, "-L", core_path, str(rom), "--config", cfg]
     print(f"Launching {rom.stem} on {info['name']}...")
-    subprocess.run(cmd)
+    try:
+        subprocess.run(cmd)
+    finally:
+        try:
+            os.unlink(cfg)
+        except OSError:
+            pass
 
 
 def main():
