@@ -14,12 +14,45 @@ def load_json(path):
         return json.load(f)
 
 
+_config_cache = None
+_systems_cache = None
+_settings_cache = None
+
+SETTINGS_PATH = CONFIG_DIR / "settings.json"
+SETTINGS_DEFAULTS = {"audio_volume": 0, "overlay_font_size": 120, "overlay_mode": "fade", "input_mappings": {}}
+
+
 def get_config():
-    return load_json(CONFIG_DIR / "config.json")
+    global _config_cache
+    if _config_cache is None:
+        _config_cache = load_json(CONFIG_DIR / "config.json")
+    return _config_cache
 
 
 def get_systems():
-    return load_json(CONFIG_DIR / "systems.json")
+    global _systems_cache
+    if _systems_cache is None:
+        _systems_cache = load_json(CONFIG_DIR / "systems.json")
+    return _systems_cache
+
+
+def get_settings():
+    global _settings_cache
+    if _settings_cache is None:
+        try:
+            _settings_cache = load_json(SETTINGS_PATH)
+        except (FileNotFoundError, json.JSONDecodeError):
+            _settings_cache = dict(SETTINGS_DEFAULTS)
+        for k, v in SETTINGS_DEFAULTS.items():
+            _settings_cache.setdefault(k, v)
+    return _settings_cache
+
+
+def save_settings(settings):
+    global _settings_cache
+    _settings_cache = settings
+    with open(SETTINGS_PATH, "w") as f:
+        json.dump(settings, f, indent=2)
 
 
 def list_systems():

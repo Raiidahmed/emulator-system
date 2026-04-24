@@ -2,6 +2,7 @@ roms/**/*
 !roms/**/
 cores/*.dylib
 saves/
+overlays/
 __pycache__/
 *.pyc
 .DS_Store
