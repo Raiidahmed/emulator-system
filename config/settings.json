@@ -9,7 +9,7 @@
         "down": "down",
         "left": "left",
         "right": "right",
-        "a": "space",
+        "a": "x",
         "b": "z",
         "x": "s",
         "y": "a",
@@ -35,5 +35,5 @@
       }
     }
   },
-  "overlay_mode": "off"
+  "overlay_mode": "fade"
 }
