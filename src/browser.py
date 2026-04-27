@@ -133,14 +133,23 @@ def write_retroarch_config(system_key, channel=None):
     overrides["fastforward_ratio"] = f'"{-1.0 if ff == 0 else float(ff)}"'
 
     # Return to Menu hotkey: quits RetroArch, returning to TUI.
-    # Disable input_menu_toggle so the same key doesn't first open the
-    # RetroArch menu (which would require a second press to actually exit).
+    # Disable menu_toggle so it doesn't intercept the exit key press.
     overrides["input_menu_toggle"] = '"nul"'
     overrides["input_menu_toggle_btn"] = '"nul"'
     hotkeys = settings.get("hotkeys", {})
     menu_key = hotkeys.get("keyboard", "escape")
     if menu_key and menu_key != "nul":
         overrides["input_exit_emulator"] = f'"{menu_key}"'
+        # Clear every base-config keyboard binding that uses the same key
+        # so nothing fires before input_exit_emulator (e.g. pause_toggle).
+        target = f'"{menu_key}"'
+        base_cfg = _retroarch_base_config()
+        for k, v in base_cfg.items():
+            if (v == target
+                    and k != "input_exit_emulator"
+                    and k.startswith("input_")
+                    and not k.endswith(("_btn", "_axis", "_mbtn"))):
+                overrides[k] = '"nul"'
     menu_btn = hotkeys.get("gamepad", "nul")
     if menu_btn and menu_btn != "nul":
         overrides["input_exit_emulator_btn"] = f'"{menu_btn}"'
