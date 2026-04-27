@@ -217,16 +217,31 @@ def _cleanup_active():
 _game_just_exited = False
 
 
+_terminal_app = None
+
+
+def _capture_focus():
+    """Record which app currently has focus so we can restore it later."""
+    global _terminal_app
+    try:
+        result = subprocess.run(
+            ["osascript", "-e",
+             "tell application \"System Events\" to get name of first application process whose frontmost is true"],
+            capture_output=True, text=True, timeout=1,
+        )
+        name = result.stdout.strip()
+        if name:
+            _terminal_app = name
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def _refocus_terminal():
-    term = os.environ.get("TERM_PROGRAM", "")
-    if "iterm" in term.lower():
-        app = "iTerm2"
-    else:
-        app = "Terminal"
-    subprocess.Popen(
-        ["osascript", "-e", f'tell application "{app}" to activate'],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    if _terminal_app:
+        subprocess.Popen(
+            ["osascript", "-e", f'tell application "{_terminal_app}" to activate'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
 
 
 def _reap_if_exited():
@@ -266,6 +281,7 @@ def start_game(rom, system_key, system_info, channel=None):
     core_path = str(local_core) if local_core.exists() else core_name
     retroarch = config["retroarch_path"]
 
+    _capture_focus()
     stop_current_game()
 
     cfg = write_retroarch_config(system_key, channel=channel)
