@@ -121,9 +121,12 @@ def write_retroarch_config(system_key, channel=None):
         "rewind_enable": '"true"' if settings.get("rewind", False) else '"false"',
     }
 
-    # aspect ratio
+    # aspect ratio — set index and disable the old auto/custom ratio mechanism
     _ar_map = {"auto": "21", "4:3": "0", "16:9": "1", "16:10": "2"}
-    overrides["aspect_ratio_index"] = f'"{_ar_map.get(settings.get("aspect_ratio", "auto"), "21")}"'
+    ar = settings.get("aspect_ratio", "auto")
+    overrides["aspect_ratio_index"] = f'"{_ar_map.get(ar, "21")}"'
+    overrides["video_aspect_ratio_auto"] = '"false"'
+    overrides["video_force_aspect"] = '"true"'
 
     # fast forward ratio (-1 = unlimited)
     ff = settings.get("fast_forward", 2)
