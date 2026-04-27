@@ -237,11 +237,18 @@ def _capture_focus():
 
 
 def _refocus_terminal():
-    if _terminal_app:
-        subprocess.Popen(
+    if not _terminal_app:
+        return
+    # RetroArch fullscreen uses its own macOS Space. When it exits, macOS
+    # runs a ~0.3s Space transition animation back to the default desktop.
+    # We fire the activate *after* that transition so it isn't overridden.
+    def _delayed():
+        time.sleep(0.5)
+        subprocess.run(
             ["osascript", "-e", f'tell application "{_terminal_app}" to activate'],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+    threading.Thread(target=_delayed, daemon=True).start()
 
 
 def _reap_if_exited():
