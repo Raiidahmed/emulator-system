@@ -101,21 +101,14 @@ def write_retroarch_config(system_key, channel=None):
         "video_windowed_fullscreen": '"true"' if fullscreen else '"false"',
     }
 
-    # hotkey: return to TUI by quitting RetroArch
-    # input_enable_hotkey = nul means no modifier needed
+    # Return to Menu hotkey: quits RetroArch, returning to TUI
     hotkeys = settings.get("hotkeys", {})
-    mappings_cfg_for_hotkey = settings.get("input_mappings", {}).get(system_key, {})
-    device_type_for_hotkey = mappings_cfg_for_hotkey.get("device", "keyboard")
-    if device_type_for_hotkey == "keyboard":
-        menu_key = hotkeys.get("keyboard", "escape")
-        if menu_key and menu_key != "nul":
-            overrides["input_enable_hotkey"] = '"nul"'
-            overrides["input_exit_emulator"] = f'"{menu_key}"'
-    else:
-        menu_btn = hotkeys.get("gamepad", "nul")
-        if menu_btn and menu_btn != "nul":
-            overrides["input_enable_hotkey_btn"] = '"nul"'
-            overrides["input_exit_emulator_btn"] = f'"{menu_btn}"'
+    menu_key = hotkeys.get("keyboard", "escape")
+    if menu_key and menu_key != "nul":
+        overrides["input_exit_emulator"] = f'"{menu_key}"'
+    menu_btn = hotkeys.get("gamepad", "nul")
+    if menu_btn and menu_btn != "nul":
+        overrides["input_exit_emulator_btn"] = f'"{menu_btn}"'
 
     overlay_mode = settings.get("overlay_mode", "fade")
     if channel is not None and overlay_mode != "off":
