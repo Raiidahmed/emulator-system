@@ -9,30 +9,10 @@ import threading
 import time
 from pathlib import Path
 
-try:
-    import Foundation
-    import objc
-except ImportError:
-    Foundation = None
-    objc = None
-
 ROOT = Path(__file__).resolve().parent.parent
 SAVES_DIR = ROOT / "saves"
 
 from src.cli import get_config, get_systems, get_settings, save_settings
-
-
-GAMECONTROLLER_AVAILABLE = False
-if objc is not None:
-    try:
-        objc.loadBundle(
-            "GameController",
-            globals(),
-            bundle_path="/System/Library/Frameworks/GameController.framework",
-        )
-        GAMECONTROLLER_AVAILABLE = True
-    except Exception:
-        GAMECONTROLLER_AVAILABLE = False
 
 
 # ── save state helpers ──────────────────────────────────────────────
@@ -61,12 +41,9 @@ def has_save_state(system_key, rom):
 
 def _retroarch_base_config():
     """Read the user's RetroArch config as a dict of key=value pairs."""
-    config = get_config()
-    ra_cfg = Path(config["retroarch_path"]).parent.parent / "Resources" / "retroarch.cfg"
-    # macOS app bundle doesn't store config there; check standard location
     for candidate in [
-        Path.home() / "Library/Application Support/RetroArch/config/retroarch.cfg",
-        ra_cfg,
+        Path.home() / ".config/retroarch/retroarch.cfg",
+        Path("/etc/retroarch.cfg"),
     ]:
         if candidate.exists():
             lines = {}
@@ -96,6 +73,19 @@ def write_retroarch_config(system_key, channel=None):
         "network_cmd_port": '"55355"',
         "audio_volume": f'"{settings["audio_volume"]:.1f}"',
         "config_save_on_exit": '"false"',
+        # composite CRT output via Pi VideoCore
+        "video_driver": '"dispmanx"',
+        "video_fullscreen": '"true"',
+        "video_vsync": '"true"',
+        "video_smooth": '"false"',        # sharp pixels on CRT
+        "video_aspect_ratio_auto": '"false"',
+        "video_aspect_ratio": '"1.333333"',  # 4:3
+        "video_scale_integer": '"false"',
+        # composite-safe framerate (NTSC ~60Hz, PAL ~50Hz)
+        "video_refresh_rate": '"60.0"',
+        # audio via 3.5mm jack (composite carries no audio)
+        "audio_driver": '"alsa"',
+        "audio_device": '"hw:0,0"',
     }
 
     overlay_mode = settings.get("overlay_mode", "fade")
@@ -231,7 +221,7 @@ def start_game(rom, system_key, system_info, channel=None):
 
     config = get_config()
     core_name = system_info["core"]
-    local_core = ROOT / config["cores_dir"] / f"{core_name}.dylib"
+    local_core = ROOT / config["cores_dir"] / f"{core_name}.so"
     core_path = str(local_core) if local_core.exists() else core_name
     retroarch = config["retroarch_path"]
 
@@ -368,6 +358,17 @@ FONT_SIZE_OPTIONS = [
 ]
 
 
+def _run_bluetoothctl(stdscr):
+    """Suspend curses, run bluetoothctl interactively, then restore."""
+    curses.endwin()
+    try:
+        subprocess.run(["bluetoothctl"])
+    except (OSError, FileNotFoundError):
+        pass
+    stdscr.refresh()
+    curses.doupdate()
+
+
 def _clear_overlay_pngs():
     for png in OVERLAY_DIR.glob("ch_*.png"):
         png.unlink()
@@ -457,75 +458,22 @@ def _detect_controllers():
     devices = ["Keyboard"]
     seen = set(devices)
 
-    for name in _game_controller_names():
-        if name not in seen:
-            devices.append(name)
-            seen.add(name)
-
-    if len(devices) > 1 or GAMECONTROLLER_AVAILABLE:
-        return devices
-
     try:
         result = subprocess.run(
-            ["system_profiler", "SPBluetoothDataType", "-json"],
+            ["bluetoothctl", "--", "devices", "Connected"],
             capture_output=True, text=True, timeout=3,
         )
-        data = json.loads(result.stdout)
-        for section in data.get("SPBluetoothDataType", []):
-            connected = section.get("device_connected", [])
-            for dev_group in connected:
-                for name, info in dev_group.items():
-                    minor = info.get("device_minorType", "")
-                    if "gamepad" in minor.lower() or "controller" in minor.lower() or "joystick" in minor.lower():
-                        if name not in seen:
-                            devices.append(name)
-                            seen.add(name)
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError, KeyError):
+        for line in result.stdout.splitlines():
+            # lines are: "Device AA:BB:CC:DD:EE:FF DeviceName"
+            parts = line.strip().split(None, 2)
+            if len(parts) == 3 and parts[0] == "Device":
+                name = parts[2]
+                if name not in seen:
+                    devices.append(name)
+                    seen.add(name)
+    except (subprocess.TimeoutExpired, OSError):
         pass
     return devices
-
-
-def _game_controller_names():
-    return [_controller_name(controller) for controller in _connected_gamepads()]
-
-
-def _connected_gamepads():
-    if not GAMECONTROLLER_AVAILABLE:
-        return []
-    try:
-        controllers = list(GCController.controllers())
-    except Exception:
-        return []
-    result = []
-    for controller in controllers:
-        if _controller_profile(controller) is not None:
-            result.append(controller)
-    return result
-
-
-def _controller_profile(controller):
-    return controller.extendedGamepad() or controller.microGamepad()
-
-
-def _controller_name(controller):
-    name = controller.vendorName() or getattr(controller, "productCategory", lambda: None)()
-    return str(name or "Controller")
-
-
-def _pump_controller_events():
-    if Foundation is None or not GAMECONTROLLER_AVAILABLE:
-        return
-    run_loop = Foundation.NSRunLoop.currentRunLoop()
-    until = Foundation.NSDate.dateWithTimeIntervalSinceNow_(0.01)
-    run_loop.runMode_beforeDate_(Foundation.NSDefaultRunLoopMode, until)
-
-
-def _controller_for_device(device_name):
-    matches = [controller for controller in _connected_gamepads()
-               if _controller_name(controller) == device_name]
-    if matches:
-        return matches[0]
-    return None
 
 
 def _read_gamepad_state(device_name):
@@ -1290,10 +1238,7 @@ def run(stdscr):
                     cursor = 0
                     rebuild_items = True
                 elif selected == "bluetooth":
-                    subprocess.Popen(
-                        ["open", "/System/Library/PreferencePanes/Bluetooth.prefPane"],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    )
+                    _run_bluetoothctl(stdscr)
 
             elif level == "controls_system":
                 controls_system_key = selected

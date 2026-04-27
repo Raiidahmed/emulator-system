@@ -1,0 +1,17 @@
+[Unit]
+Description=Emulator launcher
+After=multi-user.target bluetooth.target sound.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/emulator-system
+ExecStart=/usr/bin/python3 /home/pi/emulator-system/emu
+StandardInput=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
