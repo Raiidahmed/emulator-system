@@ -132,7 +132,11 @@ def write_retroarch_config(system_key, channel=None):
     ff = settings.get("fast_forward", 2)
     overrides["fastforward_ratio"] = f'"{-1.0 if ff == 0 else float(ff)}"'
 
-    # Return to Menu hotkey: quits RetroArch, returning to TUI
+    # Return to Menu hotkey: quits RetroArch, returning to TUI.
+    # Disable input_menu_toggle so the same key doesn't first open the
+    # RetroArch menu (which would require a second press to actually exit).
+    overrides["input_menu_toggle"] = '"nul"'
+    overrides["input_menu_toggle_btn"] = '"nul"'
     hotkeys = settings.get("hotkeys", {})
     menu_key = hotkeys.get("keyboard", "escape")
     if menu_key and menu_key != "nul":
@@ -1459,9 +1463,8 @@ def run(stdscr):
                 level = "systems"
                 cursor = 0
                 rebuild_items = True
-            else:
-                shutdown_with_animation(stdscr)
-                break
+            # at systems level (or any unhandled level), esc does nothing —
+            # only q/Q quits the app
 
 
 def main():
