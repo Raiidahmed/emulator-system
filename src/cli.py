@@ -23,7 +23,7 @@ SETTINGS_DEFAULTS = {
     "audio_volume": 0,
     "overlay_font_size": 120,
     "overlay_mode": "fade",
-    "fullscreen": False,
+    "fullscreen": True,
     "hotkeys": {"keyboard": "escape", "gamepad": "nul"},
     "input_mappings": {},
 }
@@ -58,8 +58,18 @@ def get_settings():
 def save_settings(settings):
     global _settings_cache
     _settings_cache = settings
-    with open(SETTINGS_PATH, "w") as f:
-        json.dump(settings, f, indent=2)
+    # write atomically via a temp file then rename
+    tmp = SETTINGS_PATH.with_suffix(".tmp")
+    try:
+        with open(tmp, "w") as f:
+            json.dump(settings, f, indent=2)
+        tmp.replace(SETTINGS_PATH)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def list_systems():
@@ -81,13 +91,13 @@ def list_games(system=None):
         system_dir = roms_dir / key
         if not system_dir.exists():
             continue
-        games = [
-            f for f in system_dir.iterdir()
-            if f.suffix.lower() in info["extensions"]
-        ]
+        games = sorted(
+            [f for f in system_dir.iterdir() if f.suffix.lower() in info["extensions"]],
+            key=lambda f: f.stem.lower(),
+        )
         if games:
             print(f"\n  {info['name']} ({key}/)")
-            for g in sorted(games):
+            for g in games:
                 print(f"    {g.stem}")
         elif system:
             print(f"\n  No games found in {key}/")
