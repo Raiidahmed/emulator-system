@@ -35,5 +35,9 @@
       }
     }
   },
-  "overlay_mode": "fade"
+  "overlay_mode": "fade",
+  "hotkeys": {
+    "keyboard": "escape",
+    "gamepad": "nul"
+  }
 }

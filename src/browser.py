@@ -88,7 +88,6 @@ def write_retroarch_config(system_key, channel=None):
     base = _retroarch_base_config()
 
     # apply our overrides
-    fullscreen = settings.get("fullscreen", False)
     overrides = {
         "savestate_auto_save": '"true"',
         "savestate_auto_load": '"true"',
@@ -97,8 +96,8 @@ def write_retroarch_config(system_key, channel=None):
         "network_cmd_port": '"55355"',
         "audio_volume": f'"{settings["audio_volume"]:.1f}"',
         "config_save_on_exit": '"false"',
-        "video_fullscreen": '"true"' if fullscreen else '"false"',
-        "video_windowed_fullscreen": '"true"' if fullscreen else '"false"',
+        "video_fullscreen": '"true"',
+        "video_windowed_fullscreen": '"true"',  # borderless — macOS-safe
     }
 
     # Return to Menu hotkey: quits RetroArch, returning to TUI
@@ -215,9 +214,15 @@ def _cleanup_active():
     _active["cfg"] = None
 
 
+_game_just_exited = False
+
+
 def _reap_if_exited():
+    global _game_just_exited
     if _active["proc"] and _active["proc"].poll() is not None:
+        _save_state_cache.clear()
         _cleanup_active()
+        _game_just_exited = True
 
 
 def stop_current_game():
@@ -998,6 +1003,7 @@ def draw_controls(stdscr, system_name, buttons, mapping, device_name,
 
 
 def run(stdscr):
+    global _game_just_exited
     curses.curs_set(0)
     curses.use_default_colors()
     stdscr.timeout(1000)
@@ -1025,6 +1031,17 @@ def run(stdscr):
 
     while True:
         _reap_if_exited()
+
+        # if a game just exited on its own (e.g. Escape key), snap back immediately
+        if _game_just_exited:
+            _game_just_exited = False
+            rebuild_items = True
+            level = "systems"
+            current_system = None
+            cursor = 0
+
+        # poll faster while a game is running so we react quickly when it exits
+        stdscr.timeout(100 if _active["proc"] else 1000)
 
         now_playing = _active["rom"].stem if _active["rom"] else None
 
