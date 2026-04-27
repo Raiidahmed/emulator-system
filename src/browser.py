@@ -33,6 +33,13 @@ if objc is not None:
     except Exception:
         GAMECONTROLLER_AVAILABLE = False
 
+if GAMECONTROLLER_AVAILABLE:
+    try:
+        # Keep receiving controller events while RetroArch is frontmost.
+        GCController.setShouldMonitorBackgroundEvents_(True)
+    except Exception:
+        pass
+
 
 # ── save state helpers ──────────────────────────────────────────────
 
@@ -143,8 +150,7 @@ def write_retroarch_config(system_key, channel=None):
         # Clear every base-config keyboard binding that uses the same key
         # so nothing fires before input_exit_emulator (e.g. pause_toggle).
         target = f'"{menu_key}"'
-        base_cfg = _retroarch_base_config()
-        for k, v in base_cfg.items():
+        for k, v in base.items():
             if (v == target
                     and k != "input_exit_emulator"
                     and k.startswith("input_")
@@ -289,11 +295,15 @@ def _refocus_terminal():
     def _activate():
         global _refocus_pending
         time.sleep(0.5)
-        subprocess.run(
-            ["osascript", "-e", f'tell application "{_terminal_app}" to activate'],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        _refocus_pending = False
+        try:
+            subprocess.run(
+                ["osascript", "-e", f'tell application "{_terminal_app}" to activate'],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            pass
+        finally:
+            _refocus_pending = False
 
     threading.Thread(target=_activate, daemon=True).start()
 
@@ -338,11 +348,18 @@ def start_game(rom, system_key, system_info, channel=None):
     stop_current_game()
 
     cfg = write_retroarch_config(system_key, channel=channel)
-    proc = subprocess.Popen(
-        [retroarch, "-L", core_path, str(rom), "--config", cfg],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        proc = subprocess.Popen(
+            [retroarch, "-L", core_path, str(rom), "--config", cfg],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        try:
+            os.unlink(cfg)
+        except OSError:
+            pass
+        raise
 
     _active["proc"] = proc
     _active["system"] = system_key
@@ -376,6 +393,37 @@ def generate_overlays(channel_map):
 
     OVERLAY_DIR.mkdir(exist_ok=True)
 
+    blank_png = OVERLAY_DIR / "blank.png"
+    missing_assets = (
+        not blank_png.exists()
+        or any(not (OVERLAY_DIR / f"ch_{ch:02d}.png").exists() for ch in channels)
+    )
+
+    if missing_assets:
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+        except ImportError:
+            # No Pillow available: skip overlays instead of crashing the TUI.
+            return
+
+        if not blank_png.exists():
+            Image.new("RGBA", (1, 1), (0, 0, 0, 0)).save(blank_png)
+
+        font_path = _find_vcr_font()
+        font_size = get_settings().get("overlay_font_size", 120)
+        font = (ImageFont.truetype(font_path, font_size) if font_path
+                else ImageFont.load_default())
+        green = (100, 220, 60, 255)
+
+        for channel in channels:
+            png = OVERLAY_DIR / f"ch_{channel:02d}.png"
+            if png.exists():
+                continue
+            img = Image.new("RGBA", (1920, 1080), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(img)
+            draw.text((60, 40), f"{channel:02d}", font=font, fill=green)
+            img.save(png)
+
     # always rewrite cfg files — two pages per channel:
     #   page 0 = channel number image (visible on launch)
     #   page 1 = blank transparent image (OVERLAY_NEXT switches to this)
@@ -391,41 +439,19 @@ def generate_overlays(channel_map):
             f"overlay1_descs = 0\n"
         )
 
-    blank_png = OVERLAY_DIR / "blank.png"
-    if blank_png.exists() and all(
-        (OVERLAY_DIR / f"ch_{ch:02d}.png").exists() for ch in channels
-    ):
-        return
 
-    from PIL import Image, ImageDraw, ImageFont
-
-    if not blank_png.exists():
-        Image.new("RGBA", (1, 1), (0, 0, 0, 0)).save(blank_png)
-
-    font_path = _find_vcr_font()
-    font_size = get_settings().get("overlay_font_size", 120)
-    font = (ImageFont.truetype(font_path, font_size) if font_path
-            else ImageFont.load_default())
-    green = (100, 220, 60, 255)
-
-    for channel in channels:
-        png = OVERLAY_DIR / f"ch_{channel:02d}.png"
-        if png.exists():
-            continue
-        img = Image.new("RGBA", (1920, 1080), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-        draw.text((60, 40), f"{channel:02d}", font=font, fill=green)
-        img.save(png)
+def build_channel_entries(systems):
+    channel = 1
+    entries = []
+    for key, info in systems.items():
+        for rom in scan_games(key, info):
+            entries.append((channel, key, rom))
+            channel += 1
+    return entries
 
 
 def build_channel_map(systems):
-    channel = 1
-    mapping = {}
-    for key, info in systems.items():
-        for rom in scan_games(key, info):
-            mapping[str(rom)] = channel
-            channel += 1
-    return mapping
+    return {str(rom): channel for channel, _, rom in build_channel_entries(systems)}
 
 
 # ── game scanning ───────────────────────────────────────────────────
@@ -463,6 +489,29 @@ FONT_SIZE_OPTIONS = [
     (160, "Large"),
     (200, "Extra Large"),
 ]
+SETTINGS_INDEX_MENU_HOTKEY = 9
+SETTINGS_INDEX_CONTROL_MAPPING = 10
+
+HOTKEY_DEFAULTS = {
+    "keyboard": "escape",
+    "gamepad": "nul",
+    "channel_up_keyboard": "nul",
+    "channel_up_gamepad": "nul",
+    "channel_down_keyboard": "nul",
+    "channel_down_gamepad": "nul",
+}
+
+GLOBAL_CONTROL_ITEMS = ["__menu__", "__channel_up__", "__channel_down__"]
+GLOBAL_CONTROL_LABELS = {
+    "__menu__": "Return to Menu",
+    "__channel_up__": "Channel Up",
+    "__channel_down__": "Channel Down",
+}
+GLOBAL_HOTKEY_FIELDS = {
+    "__menu__": ("keyboard", "gamepad"),
+    "__channel_up__": ("channel_up_keyboard", "channel_up_gamepad"),
+    "__channel_down__": ("channel_down_keyboard", "channel_down_gamepad"),
+}
 
 
 def _clear_overlay_pngs():
@@ -471,6 +520,35 @@ def _clear_overlay_pngs():
             png.unlink()
         except OSError:
             pass
+
+
+def _controls_all_items(buttons):
+    return ["automap"] + buttons + ["__sep__"] + GLOBAL_CONTROL_ITEMS
+
+
+def _global_hotkey_field(item, device_name):
+    fields = GLOBAL_HOTKEY_FIELDS.get(item)
+    if fields is None:
+        return None
+    return fields[0] if device_name == "Keyboard" else fields[1]
+
+
+def _global_hotkey_value(settings, item, device_name):
+    field = _global_hotkey_field(item, device_name)
+    if field is None:
+        return None
+    hotkeys = settings.get("hotkeys", {})
+    return hotkeys.get(field, HOTKEY_DEFAULTS.get(field, "nul"))
+
+
+def _set_global_hotkey(item, device_name, ra_key):
+    field = _global_hotkey_field(item, device_name)
+    if field is None:
+        return False
+    settings = get_settings()
+    settings.setdefault("hotkeys", {})[field] = ra_key
+    save_settings(settings)
+    return True
 
 
 # ── control mapping ────────────────────────────────────────────────
@@ -563,7 +641,7 @@ def _detect_controllers():
             devices.append(name)
             seen.add(name)
 
-    if len(devices) > 1 or GAMECONTROLLER_AVAILABLE:
+    if len(devices) > 1:
         _controllers_cache = devices
         _controllers_cache_time = now
         return devices
@@ -704,10 +782,15 @@ def _skip_sep(all_items, idx, direction):
 
 def _run_with_animation(stdscr, label, work_fn, min_seconds=1.15):
     done = threading.Event()
+    worker_exc = []
 
     def _worker():
-        work_fn()
-        done.set()
+        try:
+            work_fn()
+        except Exception as exc:
+            worker_exc.append(exc)
+        finally:
+            done.set()
 
     thread = threading.Thread(target=_worker, daemon=True)
     thread.start()
@@ -732,6 +815,24 @@ def _run_with_animation(stdscr, label, work_fn, min_seconds=1.15):
         frame += 1
         stdscr.getch()
     stdscr.timeout(1000)
+    if worker_exc:
+        raise worker_exc[0]
+
+
+def _show_center_message(stdscr, message, hint="Press any key to continue"):
+    stdscr.clear()
+    h, w = stdscr.getmaxyx()
+    row = h // 2 - 1
+    stdscr.attron(curses.A_BOLD)
+    stdscr.addnstr(row, max(0, (w - len(message)) // 2), message, w - 2)
+    stdscr.attroff(curses.A_BOLD)
+    stdscr.attron(curses.A_DIM)
+    stdscr.addnstr(row + 2, max(0, (w - len(hint)) // 2), hint, w - 2)
+    stdscr.attroff(curses.A_DIM)
+    stdscr.refresh()
+    stdscr.timeout(-1)
+    stdscr.getch()
+    stdscr.timeout(1000)
 
 
 def launch_with_loading(stdscr, rom, system_key, system_info, channel=None):
@@ -744,10 +845,15 @@ def launch_with_loading(stdscr, rom, system_key, system_info, channel=None):
 
     # launch RetroArch in a thread so the UI stays responsive
     launched = threading.Event()
+    launch_error = []
 
     def _launch():
-        start_game(rom, system_key, system_info, channel=channel)
-        launched.set()
+        try:
+            start_game(rom, system_key, system_info, channel=channel)
+        except Exception as exc:
+            launch_error.append(str(exc))
+        finally:
+            launched.set()
 
     thread = threading.Thread(target=_launch, daemon=True)
     thread.start()
@@ -765,6 +871,8 @@ def launch_with_loading(stdscr, rom, system_key, system_info, channel=None):
         elapsed = time.monotonic() - start
 
         if launched.is_set():
+            if launch_error:
+                break
             status = query_status()
             if status and "PLAYING" in status:
                 break
@@ -786,6 +894,11 @@ def launch_with_loading(stdscr, rom, system_key, system_info, channel=None):
         stdscr.refresh()
         frame += 1
         stdscr.getch()
+
+    if launch_error:
+        _show_center_message(stdscr, f"Launch failed: {launch_error[0]}")
+        stdscr.timeout(1000)
+        return
 
     # game is loaded — go fullscreen if the setting is on (default True)
     if _active["proc"] and _active["proc"].poll() is None:
@@ -985,12 +1098,12 @@ def draw_controls(stdscr, system_name, buttons, mapping, device_name,
     stdscr.addnstr(row + 1, 2, "\u2500" * min(len(device_line), w - 4), w - 4)
 
     list_start = row + 2
-    all_items = ["automap"] + buttons + ["__sep__", "__menu__"]
+    all_items = _controls_all_items(buttons)
     visible = max(1, h - list_start - 3)
     offset = 0 if cursor < visible else cursor - visible + 1
 
-    # snapshot hotkey so we don't call get_settings() per row
-    menu_key = get_settings().get("hotkeys", {}).get("keyboard", "escape")
+    # snapshot settings so we don't call get_settings() per row
+    settings = get_settings()
 
     for i, item in enumerate(all_items[offset:offset + visible]):
         r = list_start + i
@@ -1002,9 +1115,10 @@ def draw_controls(stdscr, system_name, buttons, mapping, device_name,
             continue
         elif item == "automap":
             text = "\u25b8 Automap"
-        elif item == "__menu__":
-            val = "Press a key..." if (capturing and idx == cursor) else _display_key(menu_key)
-            text = f"  {'Return to Menu':<14} {val}"
+        elif item in GLOBAL_CONTROL_LABELS:
+            hotkey_val = _global_hotkey_value(settings, item, device_name) or "nul"
+            val = "Press a key..." if (capturing and idx == cursor) else _display_key(hotkey_val)
+            text = f"  {GLOBAL_CONTROL_LABELS[item]:<14} {val}"
         else:
             label = BUTTON_LABELS.get(item, item)
             val = "Press a key..." if (capturing and idx == cursor) else _display_key(mapping.get(item, "?"))
@@ -1036,8 +1150,9 @@ def run(stdscr):
     stdscr.timeout(1000)
 
     systems = get_systems()
-    channel_map = build_channel_map(systems)
-    generate_overlays(channel_map)
+    channel_entries = []
+    channel_map = {}
+    channel_signature = ()
 
     level = "systems"
     current_system = None
@@ -1055,6 +1170,66 @@ def run(stdscr):
     controls_system_key = None
     controls_capture_device = None
     controls_capture_state = {}
+    channel_hotkey_prev = {"up": False, "down": False}
+
+    def _refresh_channels(force_overlays=False):
+        nonlocal channel_entries, channel_map, channel_signature
+        entries = build_channel_entries(systems)
+        signature = tuple(str(rom) for _, _, rom in entries)
+        changed = signature != channel_signature
+        if changed:
+            channel_entries = entries
+            channel_map = {str(rom): ch for ch, _, rom in entries}
+            channel_signature = signature
+        if force_overlays or changed:
+            generate_overlays(channel_map)
+
+    def _launch_channel_delta(delta):
+        nonlocal rebuild_items
+        if not (_active["proc"] and _active["proc"].poll() is None):
+            return False
+        _refresh_channels()
+        if not channel_entries:
+            return False
+        current = str(_active["rom"]) if _active["rom"] else None
+        idx = next((i for i, (_, _, rom) in enumerate(channel_entries)
+                    if str(rom) == current), None)
+        if idx is None:
+            idx = 0 if delta < 0 else -1
+        next_idx = (idx + delta) % len(channel_entries)
+        ch, sys_key, rom = channel_entries[next_idx]
+        if _active["rom"] == rom:
+            return False
+        launch_with_loading(stdscr, rom, sys_key, systems[sys_key], channel=ch)
+        rebuild_items = True
+        return True
+
+    def _poll_channel_hotkeys_gamepad():
+        settings = get_settings()
+        hotkeys = settings.get("hotkeys", {})
+        up_key = hotkeys.get("channel_up_gamepad", HOTKEY_DEFAULTS["channel_up_gamepad"])
+        down_key = hotkeys.get("channel_down_gamepad", HOTKEY_DEFAULTS["channel_down_gamepad"])
+
+        current = {"up": False, "down": False}
+        if GAMECONTROLLER_AVAILABLE and (up_key != "nul" or down_key != "nul"):
+            for device_name in _game_controller_names():
+                state = _read_gamepad_state(device_name)
+                if up_key != "nul" and state.get(up_key, False):
+                    current["up"] = True
+                if down_key != "nul" and state.get(down_key, False):
+                    current["down"] = True
+                if current["up"] and current["down"]:
+                    break
+
+        action = None
+        if current["up"] and not channel_hotkey_prev["up"]:
+            action = 1
+        elif current["down"] and not channel_hotkey_prev["down"]:
+            action = -1
+        channel_hotkey_prev.update(current)
+        return action
+
+    _refresh_channels(force_overlays=True)
 
     while True:
         _reap_if_exited()
@@ -1159,28 +1334,42 @@ def run(stdscr):
             # gamepad polling for capture mode
             if level == "controls_buttons" and controls_capturing and controls_capture_device is not None:
                 buttons = SYSTEM_BUTTONS.get(controls_system_key, SYSTEM_BUTTONS["snes"])
-                all_items = ["automap"] + buttons + ["__sep__", "__menu__"]
+                all_items = _controls_all_items(buttons)
                 ra_key, controls_capture_state = _capture_gamepad_binding(
                     controls_capture_device, controls_capture_state)
                 if ra_key:
                     btn = all_items[cursor]
-                    if btn == "__menu__":
-                        s = get_settings()
-                        s.setdefault("hotkeys", {})["gamepad"] = ra_key
-                        save_settings(s)
-                    else:
+                    if not _set_global_hotkey(btn, controls_capture_device, ra_key):
                         controls_mapping[btn] = ra_key
                     controls_capturing = False
                     controls_capture_device = None
                     controls_capture_state = {}
                     stdscr.timeout(1000)
                 continue
+
+            if _active["proc"] and _active["proc"].poll() is None:
+                action = _poll_channel_hotkeys_gamepad()
+                if action and _launch_channel_delta(action):
+                    continue
+
             # time-based idle rebuild (consistent 5s regardless of poll rate)
             now = time.monotonic()
             if now - last_idle_rebuild >= 5.0:
                 rebuild_items = True
+                _refresh_channels()
                 last_idle_rebuild = now
             continue
+
+        if _active["proc"] and _active["proc"].poll() is None:
+            ra_key = _curses_to_ra_key(key)
+            if ra_key:
+                hotkeys = get_settings().get("hotkeys", {})
+                if ra_key == hotkeys.get("channel_up_keyboard", HOTKEY_DEFAULTS["channel_up_keyboard"]):
+                    if _launch_channel_delta(1):
+                        continue
+                if ra_key == hotkeys.get("channel_down_keyboard", HOTKEY_DEFAULTS["channel_down_keyboard"]):
+                    if _launch_channel_delta(-1):
+                        continue
 
         if level != "controls_buttons" and (key == ord("q") or key == ord("Q")):
             shutdown_with_animation(stdscr)
@@ -1239,7 +1428,7 @@ def run(stdscr):
         if level == "setting_detail" and current_setting == "menu_hotkey":
             if key == 27:
                 level = "settings"
-                cursor = 4
+                cursor = SETTINGS_INDEX_MENU_HOTKEY
                 rebuild_items = True
             else:
                 ra_key = _curses_to_ra_key(key)
@@ -1248,7 +1437,7 @@ def run(stdscr):
                     s.setdefault("hotkeys", {})["keyboard"] = ra_key
                     save_settings(s)
                     level = "settings"
-                    cursor = 4
+                    cursor = SETTINGS_INDEX_MENU_HOTKEY
                     rebuild_items = True
             continue
 
@@ -1256,7 +1445,7 @@ def run(stdscr):
 
         if level == "controls_buttons":
             buttons = SYSTEM_BUTTONS.get(controls_system_key, SYSTEM_BUTTONS["snes"])
-            all_items = ["automap"] + buttons + ["__sep__", "__menu__"]
+            all_items = _controls_all_items(buttons)
 
             if controls_capturing:
                 if key == 27:
@@ -1269,11 +1458,7 @@ def run(stdscr):
                         controls_capture_device, controls_capture_state)
                     if ra_key:
                         btn = all_items[cursor]
-                        if btn == "__menu__":
-                            s = get_settings()
-                            s.setdefault("hotkeys", {})["gamepad"] = ra_key
-                            save_settings(s)
-                        else:
+                        if not _set_global_hotkey(btn, controls_capture_device, ra_key):
                             controls_mapping[btn] = ra_key
                         controls_capturing = False
                         controls_capture_device = None
@@ -1283,11 +1468,8 @@ def run(stdscr):
                     ra_key = _curses_to_ra_key(key)
                     if ra_key:
                         btn = all_items[cursor]
-                        if btn == "__menu__":
-                            s = get_settings()
-                            s.setdefault("hotkeys", {})["keyboard"] = ra_key
-                            save_settings(s)
-                        else:
+                        device = controls_devices[controls_device_idx]
+                        if not _set_global_hotkey(btn, device, ra_key):
                             controls_mapping[btn] = ra_key
                     controls_capturing = False
                     controls_capture_device = None
@@ -1393,7 +1575,8 @@ def run(stdscr):
                     s = get_settings()
                     modes = ["on", "fade", "off"]
                     cur = s.get("overlay_mode", "fade")
-                    s["overlay_mode"] = modes[(modes.index(cur) + 1) % len(modes)]
+                    idx = modes.index(cur) if cur in modes else 0
+                    s["overlay_mode"] = modes[(idx + 1) % len(modes)]
                     save_settings(s)
                     rebuild_items = True
                 elif selected == "fullscreen":
@@ -1418,7 +1601,8 @@ def run(stdscr):
                     s = get_settings()
                     opts = ["auto", "4:3", "16:9", "16:10"]
                     cur = s.get("aspect_ratio", "auto")
-                    s["aspect_ratio"] = opts[(opts.index(cur) + 1) % len(opts)]
+                    idx = opts.index(cur) if cur in opts else 0
+                    s["aspect_ratio"] = opts[(idx + 1) % len(opts)]
                     save_settings(s)
                     rebuild_items = True
                 elif selected == "rewind":
@@ -1466,7 +1650,7 @@ def run(stdscr):
                 rebuild_items = True
             elif level == "controls_system":
                 level = "settings"
-                cursor = 2
+                cursor = SETTINGS_INDEX_CONTROL_MAPPING
                 rebuild_items = True
             elif level == "settings":
                 level = "systems"

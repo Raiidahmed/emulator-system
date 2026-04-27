@@ -1,4 +1,5 @@
 import argparse
+import copy
 import json
 import os
 import subprocess
@@ -10,7 +11,7 @@ CONFIG_DIR = ROOT / "config"
 
 
 def load_json(path):
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -29,7 +30,14 @@ SETTINGS_DEFAULTS = {
     "aspect_ratio": "auto",   # "auto" | "4:3" | "16:9" | "16:10"
     "rewind": False,
     "fast_forward": 2,        # 2 | 4 | 8 | 0 (0 = unlimited)
-    "hotkeys": {"keyboard": "escape", "gamepad": "nul"},
+    "hotkeys": {
+        "keyboard": "escape",
+        "gamepad": "nul",
+        "channel_up_keyboard": "nul",
+        "channel_up_gamepad": "nul",
+        "channel_down_keyboard": "nul",
+        "channel_down_gamepad": "nul",
+    },
     "input_mappings": {},
 }
 
@@ -54,9 +62,9 @@ def get_settings():
         try:
             _settings_cache = load_json(SETTINGS_PATH)
         except (FileNotFoundError, json.JSONDecodeError):
-            _settings_cache = dict(SETTINGS_DEFAULTS)
+            _settings_cache = copy.deepcopy(SETTINGS_DEFAULTS)
         for k, v in SETTINGS_DEFAULTS.items():
-            _settings_cache.setdefault(k, v)
+            _settings_cache.setdefault(k, copy.deepcopy(v))
     return _settings_cache
 
 
@@ -90,14 +98,19 @@ def list_games(system=None):
     systems = get_systems()
     roms_dir = ROOT / config["roms_dir"]
 
+    if system and system not in systems:
+        print(f"Unknown system: {system}")
+        sys.exit(1)
+
     targets = {system: systems[system]} if system else systems
 
     for key, info in targets.items():
         system_dir = roms_dir / key
-        if not system_dir.exists():
+        if not system_dir.exists() or not system_dir.is_dir():
             continue
+        exts = set(info["extensions"])
         games = sorted(
-            [f for f in system_dir.iterdir() if f.suffix.lower() in info["extensions"]],
+            [f for f in system_dir.iterdir() if f.suffix.lower() in exts],
             key=lambda f: f.stem.lower(),
         )
         if games:
@@ -118,17 +131,18 @@ def launch(system, game):
 
     info = systems[system]
     roms_dir = ROOT / config["roms_dir"] / system
+    if not roms_dir.exists() or not roms_dir.is_dir():
+        print(f"No ROM directory found for {system}: {roms_dir}")
+        sys.exit(1)
 
-    matches = [
-        f for f in roms_dir.iterdir()
-        if f.stem.lower() == game.lower() and f.suffix.lower() in info["extensions"]
-    ]
+    exts = set(info["extensions"])
+    candidates = [f for f in roms_dir.iterdir() if f.suffix.lower() in exts]
+    game_lower = game.lower()
+
+    matches = [f for f in candidates if f.stem.lower() == game_lower]
 
     if not matches:
-        matches = [
-            f for f in roms_dir.iterdir()
-            if game.lower() in f.stem.lower() and f.suffix.lower() in info["extensions"]
-        ]
+        matches = [f for f in candidates if game_lower in f.stem.lower()]
 
     if not matches:
         print(f"No game matching '{game}' found in {system}/")
@@ -157,7 +171,16 @@ def launch(system, game):
     cmd = [retroarch, "-L", core_path, str(rom), "--config", cfg]
     print(f"Launching {rom.stem} on {info['name']}...")
     try:
-        subprocess.run(cmd)
+        try:
+            proc = subprocess.run(cmd, check=False)
+            if proc.returncode != 0:
+                print(f"RetroArch exited with code {proc.returncode}")
+                if proc.returncode < 0:
+                    sys.exit(1)
+                sys.exit(proc.returncode)
+        except FileNotFoundError:
+            print(f"RetroArch binary not found: {retroarch}")
+            sys.exit(1)
     finally:
         try:
             os.unlink(cfg)
@@ -172,22 +195,34 @@ def main():
     )
     sub = parser.add_subparsers(dest="command")
 
-    sub.add_parser("systems", help="List supported systems")
+    sub.add_parser(
+        "systems",
+        aliases=["list-systems"],
+        help="List supported systems",
+    )
 
-    games_parser = sub.add_parser("games", help="List available games")
+    games_parser = sub.add_parser(
+        "games",
+        aliases=["list-games"],
+        help="List available games",
+    )
     games_parser.add_argument("system", nargs="?", help="Filter by system")
 
-    play_parser = sub.add_parser("play", help="Launch a game")
+    play_parser = sub.add_parser(
+        "play",
+        aliases=["launch"],
+        help="Launch a game",
+    )
     play_parser.add_argument("system", help="System (e.g. nes, snes, gba)")
     play_parser.add_argument("game", help="Game name (partial match supported)")
 
     args = parser.parse_args()
 
-    if args.command == "systems":
+    if args.command in {"systems", "list-systems"}:
         list_systems()
-    elif args.command == "games":
+    elif args.command in {"games", "list-games"}:
         list_games(args.system)
-    elif args.command == "play":
+    elif args.command in {"play", "launch"}:
         launch(args.system, args.game)
     else:
         parser.print_help()

@@ -37,7 +37,17 @@
   },
   "overlay_mode": "fade",
   "hotkeys": {
-    "keyboard": "escape",
-    "gamepad": "nul"
-  }
+    "keyboard": "b",
+    "gamepad": "nul",
+    "channel_up_keyboard": "1",
+    "channel_up_gamepad": "nul",
+    "channel_down_keyboard": "2",
+    "channel_down_gamepad": "nul"
+  },
+  "fullscreen": false,
+  "video_smooth": false,
+  "integer_scale": false,
+  "aspect_ratio": "auto",
+  "rewind": false,
+  "fast_forward": 2
 }
