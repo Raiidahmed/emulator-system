@@ -24,6 +24,11 @@ SETTINGS_DEFAULTS = {
     "overlay_font_size": 120,
     "overlay_mode": "fade",
     "fullscreen": True,
+    "video_smooth": False,
+    "integer_scale": False,
+    "aspect_ratio": "auto",   # "auto" | "4:3" | "16:9" | "16:10"
+    "rewind": False,
+    "fast_forward": 2,        # 2 | 4 | 8 | 0 (0 = unlimited)
     "hotkeys": {"keyboard": "escape", "gamepad": "nul"},
     "input_mappings": {},
 }

@@ -116,7 +116,18 @@ def write_retroarch_config(system_key, channel=None):
         "config_save_on_exit": '"false"',
         "video_fullscreen": '"false"',       # start windowed; go fullscreen after load
         "video_windowed_fullscreen": '"true"',
+        "video_smooth": '"true"' if settings.get("video_smooth", False) else '"false"',
+        "video_scale_integer": '"true"' if settings.get("integer_scale", False) else '"false"',
+        "rewind_enable": '"true"' if settings.get("rewind", False) else '"false"',
     }
+
+    # aspect ratio
+    _ar_map = {"auto": "21", "4:3": "0", "16:9": "1", "16:10": "2"}
+    overrides["aspect_ratio_index"] = f'"{_ar_map.get(settings.get("aspect_ratio", "auto"), "21")}"'
+
+    # fast forward ratio (-1 = unlimited)
+    ff = settings.get("fast_forward", 2)
+    overrides["fastforward_ratio"] = f'"{-1.0 if ff == 0 else float(ff)}"'
 
     # Return to Menu hotkey: quits RetroArch, returning to TUI
     hotkeys = settings.get("hotkeys", {})
@@ -1076,11 +1087,18 @@ def run(stdscr):
                 overlay_mode = s.get("overlay_mode", "fade")
                 fullscreen = s.get("fullscreen", True)
                 menu_key = s.get("hotkeys", {}).get("keyboard", "escape")
+                ff = s.get("fast_forward", 2)
+                ff_label = "unlimited" if ff == 0 else f"{ff}x"
                 items = [
                     (f"Volume  ({s['audio_volume']:.0f} dB)", "volume"),
                     (f"Overlay Font Size  ({s['overlay_font_size']})", "font_size"),
                     (f"Channel Indicator  ({overlay_mode})", "overlay_mode"),
                     (f"Fullscreen  ({'on' if fullscreen else 'off'})", "fullscreen"),
+                    (f"Video Smooth  ({'on' if s.get('video_smooth') else 'off'})", "video_smooth"),
+                    (f"Integer Scale  ({'on' if s.get('integer_scale') else 'off'})", "integer_scale"),
+                    (f"Aspect Ratio  ({s.get('aspect_ratio', 'auto')})", "aspect_ratio"),
+                    (f"Rewind  ({'on' if s.get('rewind') else 'off'})", "rewind"),
+                    (f"Fast Forward  ({ff_label})", "fast_forward"),
                     (f"Return to Menu  ({_display_key(menu_key)})", "menu_hotkey"),
                     ("Control Mapping", "control_mapping"),
                     ("Bluetooth", "bluetooth"),
@@ -1365,6 +1383,39 @@ def run(stdscr):
                 elif selected == "fullscreen":
                     s = get_settings()
                     s["fullscreen"] = not s.get("fullscreen", True)
+                    save_settings(s)
+                    # real-time toggle if a game is running
+                    if _active["proc"] and _active["proc"].poll() is None:
+                        send_cmd("FULLSCREEN_TOGGLE")
+                    rebuild_items = True
+                elif selected == "video_smooth":
+                    s = get_settings()
+                    s["video_smooth"] = not s.get("video_smooth", False)
+                    save_settings(s)
+                    rebuild_items = True
+                elif selected == "integer_scale":
+                    s = get_settings()
+                    s["integer_scale"] = not s.get("integer_scale", False)
+                    save_settings(s)
+                    rebuild_items = True
+                elif selected == "aspect_ratio":
+                    s = get_settings()
+                    opts = ["auto", "4:3", "16:9", "16:10"]
+                    cur = s.get("aspect_ratio", "auto")
+                    s["aspect_ratio"] = opts[(opts.index(cur) + 1) % len(opts)]
+                    save_settings(s)
+                    rebuild_items = True
+                elif selected == "rewind":
+                    s = get_settings()
+                    s["rewind"] = not s.get("rewind", False)
+                    save_settings(s)
+                    rebuild_items = True
+                elif selected == "fast_forward":
+                    s = get_settings()
+                    opts = [2, 4, 8, 0]  # 0 = unlimited
+                    cur = s.get("fast_forward", 2)
+                    idx = opts.index(cur) if cur in opts else 0
+                    s["fast_forward"] = opts[(idx + 1) % len(opts)]
                     save_settings(s)
                     rebuild_items = True
                 elif selected == "menu_hotkey":
