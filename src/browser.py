@@ -217,12 +217,25 @@ def _cleanup_active():
 _game_just_exited = False
 
 
+def _refocus_terminal():
+    term = os.environ.get("TERM_PROGRAM", "")
+    if "iterm" in term.lower():
+        app = "iTerm2"
+    else:
+        app = "Terminal"
+    subprocess.Popen(
+        ["osascript", "-e", f'tell application "{app}" to activate'],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
 def _reap_if_exited():
     global _game_just_exited
     if _active["proc"] and _active["proc"].poll() is not None:
         _save_state_cache.clear()
         _cleanup_active()
         _game_just_exited = True
+        _refocus_terminal()
 
 
 def stop_current_game():
@@ -238,6 +251,7 @@ def stop_current_game():
             _active["proc"].kill()
             _active["proc"].wait()
     _cleanup_active()
+    _refocus_terminal()
 
 
 def start_game(rom, system_key, system_info, channel=None):
