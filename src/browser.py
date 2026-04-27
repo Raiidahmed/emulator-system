@@ -701,15 +701,13 @@ def _pump_controller_events():
 
 
 def _controller_for_device(device_name):
-    matches = [c for c in _connected_gamepads() if _controller_name(c) == device_name]
-    return matches[0] if matches else None
+    for controller in _connected_gamepads():
+        if _controller_name(controller) == device_name:
+            return controller
+    return None
 
 
-def _read_gamepad_state(device_name):
-    controller = _controller_for_device(device_name)
-    if controller is None:
-        return {}
-    _pump_controller_events()
+def _read_gamepad_state_for_controller(controller):
     profile = _controller_profile(controller)
     if profile is None:
         return {}
@@ -730,6 +728,14 @@ def _read_gamepad_state(device_name):
         if element is not None:
             state[code] = bool(element.isPressed())
     return state
+
+
+def _read_gamepad_state(device_name):
+    controller = _controller_for_device(device_name)
+    if controller is None:
+        return {}
+    _pump_controller_events()
+    return _read_gamepad_state_for_controller(controller)
 
 
 def _capture_gamepad_binding(device_name, baseline):
@@ -1188,7 +1194,6 @@ def run(stdscr):
         nonlocal rebuild_items
         if not (_active["proc"] and _active["proc"].poll() is None):
             return False
-        _refresh_channels()
         if not channel_entries:
             return False
         current = str(_active["rom"]) if _active["rom"] else None
@@ -1212,8 +1217,11 @@ def run(stdscr):
 
         current = {"up": False, "down": False}
         if GAMECONTROLLER_AVAILABLE and (up_key != "nul" or down_key != "nul"):
-            for device_name in _game_controller_names():
-                state = _read_gamepad_state(device_name)
+            controllers = _connected_gamepads()
+            if controllers:
+                _pump_controller_events()
+            for controller in controllers:
+                state = _read_gamepad_state_for_controller(controller)
                 if up_key != "nul" and state.get(up_key, False):
                     current["up"] = True
                 if down_key != "nul" and state.get(down_key, False):

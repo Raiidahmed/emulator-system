@@ -42,6 +42,20 @@ SETTINGS_DEFAULTS = {
 }
 
 
+def _merge_defaults(data, defaults):
+    """Recursively fill missing keys in data with defaults."""
+    if not isinstance(defaults, dict):
+        return data
+    if not isinstance(data, dict):
+        return copy.deepcopy(defaults)
+    for key, value in defaults.items():
+        if key not in data:
+            data[key] = copy.deepcopy(value)
+        elif isinstance(value, dict):
+            data[key] = _merge_defaults(data.get(key), value)
+    return data
+
+
 def get_config():
     global _config_cache
     if _config_cache is None:
@@ -63,8 +77,7 @@ def get_settings():
             _settings_cache = load_json(SETTINGS_PATH)
         except (FileNotFoundError, json.JSONDecodeError):
             _settings_cache = copy.deepcopy(SETTINGS_DEFAULTS)
-        for k, v in SETTINGS_DEFAULTS.items():
-            _settings_cache.setdefault(k, copy.deepcopy(v))
+        _settings_cache = _merge_defaults(_settings_cache, SETTINGS_DEFAULTS)
     return _settings_cache
 
 
