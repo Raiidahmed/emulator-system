@@ -88,6 +88,7 @@ def write_retroarch_config(system_key, channel=None):
     base = _retroarch_base_config()
 
     # apply our overrides
+    fullscreen = settings.get("fullscreen", False)
     overrides = {
         "savestate_auto_save": '"true"',
         "savestate_auto_load": '"true"',
@@ -96,7 +97,25 @@ def write_retroarch_config(system_key, channel=None):
         "network_cmd_port": '"55355"',
         "audio_volume": f'"{settings["audio_volume"]:.1f}"',
         "config_save_on_exit": '"false"',
+        "video_fullscreen": '"true"' if fullscreen else '"false"',
+        "video_windowed_fullscreen": '"true"' if fullscreen else '"false"',
     }
+
+    # hotkey: return to TUI by quitting RetroArch
+    # input_enable_hotkey = nul means no modifier needed
+    hotkeys = settings.get("hotkeys", {})
+    mappings_cfg_for_hotkey = settings.get("input_mappings", {}).get(system_key, {})
+    device_type_for_hotkey = mappings_cfg_for_hotkey.get("device", "keyboard")
+    if device_type_for_hotkey == "keyboard":
+        menu_key = hotkeys.get("keyboard", "escape")
+        if menu_key and menu_key != "nul":
+            overrides["input_enable_hotkey"] = '"nul"'
+            overrides["input_exit_emulator"] = f'"{menu_key}"'
+    else:
+        menu_btn = hotkeys.get("gamepad", "nul")
+        if menu_btn and menu_btn != "nul":
+            overrides["input_enable_hotkey_btn"] = '"nul"'
+            overrides["input_exit_emulator_btn"] = f'"{menu_btn}"'
 
     overlay_mode = settings.get("overlay_mode", "fade")
     if channel is not None and overlay_mode != "off":
@@ -872,6 +891,34 @@ def draw_font_size(stdscr, options, cursor, current_size, now_playing=None):
     stdscr.refresh()
 
 
+def _draw_menu_hotkey(stdscr, settings, now_playing=None):
+    stdscr.clear()
+    h, w = stdscr.getmaxyx()
+    crumb = "emu > Settings > Return to Menu"
+    stdscr.attron(curses.A_BOLD)
+    stdscr.addnstr(1, 2, crumb, w - 4)
+    stdscr.attroff(curses.A_BOLD)
+    stdscr.addnstr(2, 2, "\u2500" * min(len(crumb), w - 4), w - 4)
+
+    row = 4
+    if now_playing:
+        stdscr.addnstr(3, 4, f"\u25b6 Now playing: {now_playing}", w - 6, curses.A_DIM)
+        row = 5
+
+    cur = settings.get("hotkeys", {}).get("keyboard", "escape")
+    stdscr.attron(curses.A_BOLD)
+    stdscr.addnstr(row, 4, f"Return to Menu: {_display_key(cur)}", w - 6)
+    stdscr.attroff(curses.A_BOLD)
+    stdscr.addnstr(row + 2, 4,
+        "Press a key to set as the Return to Menu hotkey.", w - 6, curses.A_DIM)
+
+    hint = " [any key] set binding  [esc] cancel "
+    stdscr.attron(curses.A_DIM)
+    stdscr.addnstr(h - 1, 2, hint, w - 4)
+    stdscr.attroff(curses.A_DIM)
+    stdscr.refresh()
+
+
 def draw_controls(stdscr, system_name, buttons, mapping, device_name,
                   cursor, capturing, now_playing=None):
     stdscr.clear()
@@ -896,8 +943,8 @@ def draw_controls(stdscr, system_name, buttons, mapping, device_name,
     stdscr.addnstr(row + 1, 2, "\u2500" * min(len(device_line), w - 4), w - 4)
 
     list_start = row + 2
-    # items: index 0 = Automap, then buttons
-    all_items = ["automap"] + buttons
+    # items: index 0 = Automap, then buttons, then separator + menu hotkey
+    all_items = ["automap"] + buttons + ["__sep__", "__menu__"]
     visible = h - list_start - 3
     if visible < 1:
         visible = 1
@@ -913,8 +960,18 @@ def draw_controls(stdscr, system_name, buttons, mapping, device_name,
             break
         idx = i + offset
 
-        if item == "automap":
+        if item == "__sep__":
+            stdscr.addnstr(r, 4, "\u2500" * min(20, w - 6), w - 6, curses.A_DIM)
+            continue
+        elif item == "automap":
             text = "\u25b8 Automap"
+        elif item == "__menu__":
+            menu_key = get_settings().get("hotkeys", {}).get("keyboard", "escape")
+            if capturing and idx == cursor:
+                val = "Press a key..."
+            else:
+                val = _display_key(menu_key)
+            text = f"  {'Return to Menu':<14} {val}"
         else:
             label = BUTTON_LABELS.get(item, item)
             if capturing and idx == cursor:
@@ -1006,6 +1063,8 @@ def run(stdscr):
         elif level == "setting_detail":
             if current_setting == "volume":
                 draw_volume(stdscr, temp_value, now_playing)
+            elif current_setting == "menu_hotkey":
+                _draw_menu_hotkey(stdscr, get_settings(), now_playing)
             elif current_setting == "font_size":
                 draw_font_size(
                     stdscr, FONT_SIZE_OPTIONS, cursor,
@@ -1016,10 +1075,15 @@ def run(stdscr):
             if rebuild_items:
                 settings = get_settings()
                 overlay_mode = settings.get("overlay_mode", "fade")
+                fullscreen = settings.get("fullscreen", False)
+                hotkeys = settings.get("hotkeys", {})
+                menu_key = hotkeys.get("keyboard", "escape")
                 items = [
                     (f"Volume  ({settings['audio_volume']:.0f} dB)", "volume"),
                     (f"Overlay Font Size  ({settings['overlay_font_size']})", "font_size"),
                     (f"Channel Indicator  ({overlay_mode})", "overlay_mode"),
+                    (f"Fullscreen  ({'on' if fullscreen else 'off'})", "fullscreen"),
+                    (f"Return to Menu  ({_display_key(menu_key)})", "menu_hotkey"),
                     ("Control Mapping", "control_mapping"),
                     ("Bluetooth", "bluetooth"),
                 ]
@@ -1072,13 +1136,18 @@ def run(stdscr):
         if key == -1:
             if level == "controls_buttons" and controls_capturing and controls_capture_device is not None:
                 buttons = SYSTEM_BUTTONS.get(controls_system_key, SYSTEM_BUTTONS["snes"])
-                all_items = ["automap"] + buttons
+                all_items = ["automap"] + buttons + ["__sep__", "__menu__"]
                 ra_key, controls_capture_state = _capture_gamepad_binding(
                     controls_capture_device, controls_capture_state
                 )
                 if ra_key:
                     btn = all_items[cursor]
-                    controls_mapping[btn] = ra_key
+                    if btn == "__menu__":
+                        s = get_settings()
+                        s.setdefault("hotkeys", {})["gamepad"] = ra_key
+                        save_settings(s)
+                    else:
+                        controls_mapping[btn] = ra_key
                     controls_capturing = False
                     controls_capture_device = None
                     controls_capture_state = {}
@@ -1142,11 +1211,32 @@ def run(stdscr):
                 rebuild_items = True
             continue
 
+        # ── setting_detail: menu hotkey ──
+
+        if level == "setting_detail" and current_setting == "menu_hotkey":
+            s = get_settings()
+            device_type = s.get("input_mappings", {}).get(
+                list(s.get("input_mappings", {}).keys())[0], {}
+            ).get("device", "keyboard") if s.get("input_mappings") else "keyboard"
+            if key == 27:
+                level = "settings"
+                cursor = 4
+                rebuild_items = True
+            else:
+                ra_key = _curses_to_ra_key(key)
+                if ra_key:
+                    s.setdefault("hotkeys", {})["keyboard"] = ra_key
+                    save_settings(s)
+                    level = "settings"
+                    cursor = 4
+                    rebuild_items = True
+            continue
+
         # ── controls_buttons ──
 
         if level == "controls_buttons":
             buttons = SYSTEM_BUTTONS.get(controls_system_key, SYSTEM_BUTTONS["snes"])
-            all_items = ["automap"] + buttons
+            all_items = ["automap"] + buttons + ["__sep__", "__menu__"]
 
             if controls_capturing:
                 # capture mode: keyboard keys or controller buttons bind the selected button
@@ -1161,7 +1251,12 @@ def run(stdscr):
                     )
                     if ra_key:
                         btn = all_items[cursor]
-                        controls_mapping[btn] = ra_key
+                        if btn == "__menu__":
+                            s = get_settings()
+                            s.setdefault("hotkeys", {})["gamepad"] = ra_key
+                            save_settings(s)
+                        else:
+                            controls_mapping[btn] = ra_key
                         controls_capturing = False
                         controls_capture_device = None
                         controls_capture_state = {}
@@ -1170,17 +1265,29 @@ def run(stdscr):
                     ra_key = _curses_to_ra_key(key)
                     if ra_key:
                         btn = all_items[cursor]
-                        controls_mapping[btn] = ra_key
+                        if btn == "__menu__":
+                            s = get_settings()
+                            s.setdefault("hotkeys", {})["keyboard"] = ra_key
+                            save_settings(s)
+                        else:
+                            controls_mapping[btn] = ra_key
                     controls_capturing = False
                     controls_capture_device = None
                     controls_capture_state = {}
                     stdscr.timeout(1000)
                 continue
 
+            def _skip_sep(idx, direction):
+                """Advance past __sep__ entries."""
+                idx = (idx + direction) % len(all_items)
+                if all_items[idx] == "__sep__":
+                    idx = (idx + direction) % len(all_items)
+                return idx
+
             if key == curses.KEY_UP or key == ord("k"):
-                cursor = (cursor - 1) % len(all_items)
+                cursor = _skip_sep(cursor, -1)
             elif key == curses.KEY_DOWN or key == ord("j"):
-                cursor = (cursor + 1) % len(all_items)
+                cursor = _skip_sep(cursor, 1)
             elif key == curses.KEY_LEFT or key == ord("h"):
                 # cycle device left
                 controls_device_idx = (controls_device_idx - 1) % len(controls_devices)
@@ -1285,6 +1392,14 @@ def run(stdscr):
                     s["overlay_mode"] = modes[(modes.index(cur) + 1) % len(modes)]
                     save_settings(s)
                     rebuild_items = True
+                elif selected == "fullscreen":
+                    s = get_settings()
+                    s["fullscreen"] = not s.get("fullscreen", False)
+                    save_settings(s)
+                    rebuild_items = True
+                elif selected == "menu_hotkey":
+                    level = "setting_detail"
+                    current_setting = "menu_hotkey"
                 elif selected == "control_mapping":
                     level = "controls_system"
                     cursor = 0

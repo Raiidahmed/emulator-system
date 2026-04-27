@@ -19,7 +19,14 @@ _systems_cache = None
 _settings_cache = None
 
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
-SETTINGS_DEFAULTS = {"audio_volume": 0, "overlay_font_size": 120, "overlay_mode": "fade", "input_mappings": {}}
+SETTINGS_DEFAULTS = {
+    "audio_volume": 0,
+    "overlay_font_size": 120,
+    "overlay_mode": "fade",
+    "fullscreen": False,
+    "hotkeys": {"keyboard": "escape", "gamepad": "nul"},
+    "input_mappings": {},
+}
 
 
 def get_config():
