@@ -791,6 +791,15 @@ def launch_with_loading(stdscr, rom, system_key, system_info, channel=None):
     if _active["proc"] and _active["proc"].poll() is None:
         if get_settings().get("fullscreen", True):
             send_cmd("FULLSCREEN_TOGGLE")
+            # Give RetroArch keyboard focus so the first keypress isn't
+            # consumed by macOS as a window-activation event.
+            def _focus_retroarch():
+                time.sleep(0.3)
+                subprocess.run(
+                    ["osascript", "-e", 'tell application "RetroArch" to activate'],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            threading.Thread(target=_focus_retroarch, daemon=True).start()
 
     # schedule overlay removal for fade mode
     if get_settings().get("overlay_mode", "fade") == "fade":
