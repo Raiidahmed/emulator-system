@@ -96,8 +96,8 @@ def write_retroarch_config(system_key, channel=None):
         "network_cmd_port": '"55355"',
         "audio_volume": f'"{settings["audio_volume"]:.1f}"',
         "config_save_on_exit": '"false"',
-        "video_fullscreen": '"true"',
-        "video_windowed_fullscreen": '"true"',  # borderless — macOS-safe
+        "video_fullscreen": '"false"',       # start windowed; go fullscreen after load
+        "video_windowed_fullscreen": '"true"',
     }
 
     # Return to Menu hotkey: quits RetroArch, returning to TUI
@@ -745,6 +745,10 @@ def launch_with_loading(stdscr, rom, system_key, system_info, channel=None):
         stdscr.refresh()
         frame += 1
         stdscr.getch()
+
+    # game is loaded — now go fullscreen
+    if _active["proc"] and _active["proc"].poll() is None:
+        send_cmd("FULLSCREEN_TOGGLE")
 
     # schedule overlay removal for fade mode
     if get_settings().get("overlay_mode", "fade") == "fade":
