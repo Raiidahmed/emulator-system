@@ -189,55 +189,6 @@ def write_retroarch_config(system_key, channel=None):
     return path
 
 
-_RA_KEY_OSASCRIPT = {
-    "escape": "key code 53",
-    "enter": "key code 36", "return": "key code 36",
-    "space": 'keystroke " "',
-    "backspace": "key code 51",
-    "up": "key code 126", "down": "key code 125",
-    "left": "key code 123", "right": "key code 124",
-    "rshift": "key code 60", "lshift": "key code 56",
-    "rctrl": "key code 59", "lctrl": "key code 59",
-    "tab": "key code 48",
-}
-
-
-def _simulate_key(ra_key):
-    """Fire a synthetic keypress to the RetroArch process via osascript."""
-    action = _RA_KEY_OSASCRIPT.get(ra_key)
-    if action is None and len(ra_key) == 1:
-        action = f'keystroke "{ra_key}"'
-    if action is None:
-        return
-    subprocess.run(
-        ["osascript", "-e",
-         f'tell application "System Events" to tell process "RetroArch" to {action}'],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-
-
-def _start_exit_key_monitor():
-    """Poll GET_STATUS; when game goes PLAYING→PAUSED, fire a second
-    keypress so a single user press reliably exits RetroArch."""
-    proc = _active["proc"]
-    key = get_settings().get("hotkeys", {}).get("keyboard", "escape")
-    if not key or key == "nul":
-        return
-
-    def _monitor():
-        was_playing = False
-        while proc and proc.poll() is None:
-            status = query_status()
-            is_playing = bool(status and "PLAYING" in status)
-            is_paused = bool(status and "PAUSED" in status)
-            if was_playing and is_paused:
-                _simulate_key(key)
-            was_playing = is_playing
-            time.sleep(0.08)
-
-    threading.Thread(target=_monitor, daemon=True).start()
-
-
 def send_cmd(cmd, port=55355):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -840,15 +791,6 @@ def launch_with_loading(stdscr, rom, system_key, system_info, channel=None):
     if _active["proc"] and _active["proc"].poll() is None:
         if get_settings().get("fullscreen", True):
             send_cmd("FULLSCREEN_TOGGLE")
-            def _focus_retroarch():
-                time.sleep(0.3)
-                subprocess.run(
-                    ["osascript", "-e", 'tell application "RetroArch" to activate'],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                )
-            threading.Thread(target=_focus_retroarch, daemon=True).start()
-        # monitor for PLAYING→PAUSED and auto-fire the second keypress
-        _start_exit_key_monitor()
 
     # schedule overlay removal for fade mode
     if get_settings().get("overlay_mode", "fade") == "fade":
