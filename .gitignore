@@ -6,3 +6,6 @@ overlays/
 __pycache__/
 *.pyc
 .DS_Store
+.aider*
+.pytest_cache/
+agent-runs/
