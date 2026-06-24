@@ -8,3 +8,6 @@ __pycache__/
 .DS_Store
 .aider*
 .pytest_cache/
+logs/
+vendor/
+config/config.local.json

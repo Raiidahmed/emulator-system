@@ -247,6 +247,81 @@ def load_last_played():
     return None
 
 
+# ── favorites helpers ──────────────────────────────────────────────
+
+FAVORITES_PATH = SAVES_DIR / ".favorites.json"
+_favorites_cache = None
+
+
+def _fav_key(system_key, name):
+    return (system_key, name)
+
+
+def _toggle_in_list(favs, system_key, name):
+    """Pure: return a new favorites list with (system,name) flipped."""
+    out = [f for f in favs
+           if (f.get("system"), f.get("name")) != _fav_key(system_key, name)]
+    if len(out) == len(favs):          # wasn't present -> add it
+        out.append({"system": system_key, "name": name})
+    return out
+
+
+def load_favorites():
+    global _favorites_cache
+    if _favorites_cache is not None:
+        return _favorites_cache
+    try:
+        with open(FAVORITES_PATH) as f:
+            data = json.load(f)
+        favs = [e for e in data
+                if isinstance(e, dict) and "system" in e and "name" in e]
+    except (FileNotFoundError, json.JSONDecodeError, TypeError):
+        favs = []
+    _favorites_cache = favs
+    return favs
+
+
+def save_favorites(favs):
+    global _favorites_cache
+    _favorites_cache = favs
+    SAVES_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = FAVORITES_PATH.with_suffix(".tmp")
+    try:
+        with open(tmp, "w") as f:
+            json.dump(favs, f, indent=2)
+        tmp.replace(FAVORITES_PATH)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def is_favorite(system_key, rom):
+    return any((f.get("system"), f.get("name")) == _fav_key(system_key, rom.stem)
+               for f in load_favorites())
+
+
+def toggle_favorite(system_key, rom):
+    save_favorites(_toggle_in_list(load_favorites(), system_key, rom.stem))
+    return is_favorite(system_key, rom)
+
+
+def favorite_games(systems):
+    """Resolve favorites to (system_key, info, rom Path); skip missing ROMs."""
+    out = []
+    for fav in load_favorites():
+        key = fav["system"]
+        info = systems.get(key)
+        if not info:
+            continue
+        rom = next((g for g in scan_games(key, info) if g.stem == fav["name"]), None)
+        if rom is not None:
+            out.append((key, info, rom))
+    return out
+
+
 # ── active game state ───────────────────────────────────────────────
 
 _active = {"proc": None, "system": None, "rom": None, "cfg": None}
@@ -478,6 +553,60 @@ def scan_games(system_key, system_info):
         )
     _scan_cache[system_key] = (now, result)
     return result
+
+
+# ── search helpers ──────────────────────────────────────────────────
+
+
+def build_search_index(systems):
+    """Build the list of searchable records for the global search screen.
+
+    Each record is a 5-tuple: (search_text, label, category, kind, payload)
+      search_text: lowercase string to match against
+      label: display name
+      category: "Game" | "System" | "Setting" | "Feature"
+      kind: "game" | "system" | "settings_nav" | "resume"
+      payload: kind-specific data
+    """
+    index = []
+    for key, info in systems.items():
+        for rom in scan_games(key, info):
+            text = f"{rom.stem} {info['name']} {key}".lower()
+            index.append((text, rom.stem, "Game", "game", (key, rom)))
+    for key, info in systems.items():
+        if scan_games(key, info):
+            index.append((f"{info['name']} {key}".lower(), info["name"],
+                          "System", "system", key))
+    settings_rows = [
+        ("Volume", 0), ("Overlay Font Size", 1), ("Channel Indicator", 2),
+        ("Fullscreen", 3), ("Video Smooth", 4), ("Integer Scale", 5),
+        ("Aspect Ratio", 6), ("Rewind", 7), ("Fast Forward", 8),
+        ("Return to Menu", 9),
+    ]
+    for label, idx in settings_rows:
+        index.append((label.lower(), label, "Setting", "settings_nav", idx))
+    index.append(("settings".lower(), "Settings", "Feature", "settings_nav", 0))
+    index.append(("control mapping controls".lower(), "Control Mapping",
+                  "Feature", "settings_nav", 10))
+    index.append(("bluetooth".lower(), "Bluetooth", "Feature", "settings_nav", 11))
+    last = load_last_played()
+    if last and last["system"] in systems:
+        index.append((f"resume {last['name']}".lower(),
+                      f"Resume: {last['name']}", "Feature", "resume", last))
+    if favorite_games(systems):
+        index.append(("favorites", "Favorites", "Feature", "favorites_nav", None))
+    return index
+
+
+def filter_search(index, query):
+    """Case-insensitive substring filter. Empty query returns the full index.
+
+    Searches both the search_text (r[0]) and category tag (r[2]).
+    """
+    q = query.strip().lower()
+    if not q:
+        return list(index)
+    return [r for r in index if q in r[0] or q in r[2].lower()]
 
 
 # ── settings helpers ────────────────────────────────────────────────
@@ -1005,6 +1134,53 @@ def draw(stdscr, path_parts, items, cursor, empty_msg, now_playing=None,
     stdscr.refresh()
 
 
+def draw_search(stdscr, query, results, cursor, now_playing=None):
+    stdscr.clear()
+    h, w = stdscr.getmaxyx()
+    crumb = "emu > Search"
+    stdscr.attron(curses.A_BOLD)
+    stdscr.addnstr(1, 2, crumb, w - 4)
+    stdscr.attroff(curses.A_BOLD)
+    stdscr.addnstr(2, 2, "\u2500" * min(len(crumb), w - 4), w - 4)
+    row = 4
+    if now_playing:
+        stdscr.addnstr(3, 4, f"\u25b6 Now playing: {now_playing}", w - 6, curses.A_DIM)
+        row = 5
+    stdscr.attron(curses.A_BOLD)
+    stdscr.addnstr(row, 2, f"  Search: {query}\u2588", w - 4)
+    stdscr.attroff(curses.A_BOLD)
+
+    list_start = row + 2
+    if not results:
+        msg = "Type to search games, systems, settings, features." if not query \
+              else "No matches."
+        stdscr.addnstr(list_start, 4, msg, w - 6, curses.A_DIM)
+    else:
+        visible = max(1, h - list_start - 3)
+        offset = 0 if cursor < visible else cursor - visible + 1
+        for i, rec in enumerate(results[offset:offset + visible]):
+            r = list_start + i
+            if r >= h - 2:
+                break
+            _text, label, category, _kind, _payload = rec
+            line = f"{label}   [{category}]"
+            if i + offset == cursor:
+                stdscr.attron(curses.A_REVERSE)
+                stdscr.addnstr(r, 3, f" {line} ", w - 5)
+                stdscr.attroff(curses.A_REVERSE)
+            else:
+                stdscr.addnstr(r, 4, line, w - 6)
+        if len(results) > visible:
+            indicator = f" {cursor + 1}/{len(results)} "
+            stdscr.addnstr(2, max(2, w - len(indicator) - 2), indicator, w - 4, curses.A_DIM)
+
+    hint = " [type] filter  [\u2191\u2193] navigate  [enter] open  [esc] back "
+    stdscr.attron(curses.A_DIM)
+    stdscr.addnstr(h - 1, 2, hint, w - 4)
+    stdscr.attroff(curses.A_DIM)
+    stdscr.refresh()
+
+
 def draw_volume(stdscr, volume_db, now_playing=None):
     stdscr.clear()
     h, w = stdscr.getmaxyx()
@@ -1177,6 +1353,9 @@ def run(stdscr):
     controls_capture_device = None
     controls_capture_state = {}
     channel_hotkey_prev = {"up": False, "down": False}
+    search_query = ""
+    search_index = []
+    search_results = []
 
     def _refresh_channels(force_overlays=False):
         nonlocal channel_entries, channel_map, channel_signature
@@ -1317,10 +1496,14 @@ def run(stdscr):
                     games = scan_games(key, info)
                     if games:
                         items.append((f"{info['name']}  ({len(games)})", key))
+                if favorite_games(systems):
+                    items.append(("\u2605 Favorites", ("favorites", None)))
+                items.append(("\U0001F50D Search", ("search", None)))
                 items.append(("\u2699 Settings", ("settings", None)))
                 rebuild_items = False
             draw(stdscr, [], items, cursor,
-                 "No ROMs found. Add games to roms/<system>/", now_playing)
+                 "No ROMs found. Add games to roms/<system>/", now_playing,
+                 footer_hint=" [\u2191\u2193] navigate  [enter] select  [esc] back  [q] quit ")
 
         elif level == "games":
             if rebuild_items:
@@ -1328,11 +1511,27 @@ def run(stdscr):
                 games = scan_games(current_system, info)
                 items = []
                 for g in games:
-                    prefix = "\u25cf " if has_save_state(current_system, g) else "  "
-                    items.append((f"{prefix}{g.stem}", g))
+                    star = "\u2605" if is_favorite(current_system, g) else " "
+                    dot = "\u25cf" if has_save_state(current_system, g) else " "
+                    items.append((f"{star}{dot} {g.stem}", g))
                 rebuild_items = False
             draw(stdscr, [current_system], items, cursor,
-                 "No games in this folder.", now_playing)
+                  "No games in this folder.", now_playing,
+                  footer_hint=" [\u2191\u2193] navigate  [enter] play  "
+                              "[f] favorite  [esc] back  [q] quit ")
+
+        elif level == "favorites":
+            if rebuild_items:
+                items = [(f"{rom.stem}   [{info['name']}]", (key, rom))
+                         for key, info, rom in favorite_games(systems)]
+                rebuild_items = False
+            draw(stdscr, ["Favorites"], items, cursor, "No favorites yet.",
+                 now_playing,
+                 footer_hint=" [\u2191\u2193] navigate  [enter] play  "
+                             "[esc] back  [q] quit ")
+
+        elif level == "search":
+            draw_search(stdscr, search_query, search_results, cursor, now_playing)
 
         # ── input ──
 
@@ -1368,6 +1567,47 @@ def run(stdscr):
                 last_idle_rebuild = now
             continue
 
+        if level == "search":
+            if key == 27:
+                level = "systems"
+                cursor = 0
+                rebuild_items = True
+            elif key in (curses.KEY_BACKSPACE, 127, 8):
+                search_query = search_query[:-1]
+                search_results = filter_search(search_index, search_query)
+                cursor = 0
+            elif key == curses.KEY_UP:
+                if search_results:
+                    cursor = (cursor - 1) % len(search_results)
+            elif key == curses.KEY_DOWN:
+                if search_results:
+                    cursor = (cursor + 1) % len(search_results)
+            elif key in (curses.KEY_ENTER, 10, 13):
+                if search_results:
+                    _text, _label, _cat, kind, payload = search_results[cursor]
+                    if kind == "game":
+                        sys_key, rom = payload
+                        ch = channel_map.get(str(rom))
+                        launch_with_loading(stdscr, rom, sys_key, systems[sys_key], channel=ch)
+                        level = "systems"; cursor = 0; rebuild_items = True
+                    elif kind == "system":
+                        current_system = payload
+                        level = "games"; cursor = 0; rebuild_items = True
+                    elif kind == "settings_nav":
+                        level = "settings"; cursor = payload; rebuild_items = True
+                    elif kind == "resume":
+                        rom = Path(payload["rom"]); sys_key = payload["system"]
+                        ch = channel_map.get(str(rom))
+                        launch_with_loading(stdscr, rom, sys_key, systems[sys_key], channel=ch)
+                        level = "systems"; cursor = 0; rebuild_items = True
+                    elif kind == "favorites_nav":
+                        level = "favorites"; cursor = 0; rebuild_items = True
+            elif 32 <= key < 127:
+                search_query += chr(key)
+                search_results = filter_search(search_index, search_query)
+                cursor = 0
+            continue
+
         if _active["proc"] and _active["proc"].poll() is None:
             ra_key = _curses_to_ra_key(key)
             if ra_key:
@@ -1379,7 +1619,7 @@ def run(stdscr):
                     if _launch_channel_delta(-1):
                         continue
 
-        if level != "controls_buttons" and (key == ord("q") or key == ord("Q")):
+        if level not in ("controls_buttons", "search") and (key == ord("q") or key == ord("Q")):
             shutdown_with_animation(stdscr)
             break
 
@@ -1533,6 +1773,11 @@ def run(stdscr):
             if items:
                 cursor = (cursor + 1) % len(items)
 
+        elif level == "games" and key in (ord("f"), ord("F")):
+            if items:
+                toggle_favorite(current_system, items[cursor][1])
+                rebuild_items = True
+
         elif key in (curses.KEY_ENTER, 10, 13):
             if not items:
                 continue
@@ -1555,6 +1800,16 @@ def run(stdscr):
                     level = "settings"
                     cursor = 0
                     rebuild_items = True
+                elif isinstance(selected, tuple) and selected[0] == "search":
+                    level = "search"
+                    search_query = ""
+                    search_index = build_search_index(systems)
+                    search_results = filter_search(search_index, search_query)
+                    cursor = 0
+                elif isinstance(selected, tuple) and selected[0] == "favorites":
+                    level = "favorites"
+                    cursor = 0
+                    rebuild_items = True
                 else:
                     current_system = selected
                     level = "games"
@@ -1566,6 +1821,12 @@ def run(stdscr):
                 ch = channel_map.get(str(rom))
                 launch_with_loading(stdscr, rom, current_system,
                                     systems[current_system], channel=ch)
+                rebuild_items = True
+
+            elif level == "favorites":
+                sys_key, rom = selected
+                ch = channel_map.get(str(rom))
+                launch_with_loading(stdscr, rom, sys_key, systems[sys_key], channel=ch)
                 rebuild_items = True
 
             elif level == "settings":
@@ -1654,6 +1915,10 @@ def run(stdscr):
             if level == "games":
                 level = "systems"
                 current_system = None
+                cursor = 0
+                rebuild_items = True
+            elif level == "favorites":
+                level = "systems"
                 cursor = 0
                 rebuild_items = True
             elif level == "controls_system":

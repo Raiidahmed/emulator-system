@@ -25,6 +25,32 @@ A CLI-based multi-system emulator frontend that wraps RetroArch. Lets you browse
 - `config/systems.json` — System-to-core mappings
 - `cores/` — RetroArch cores (`.dylib`)
 - `roms/` — Game ROMs organized by system (not included)
+- `docs/plans/` — Self-contained implementation specs for handoff
+- `start-impl.sh` — Launches opencode against a plan (defaults to a local LM Studio model)
+
+## Implementation handoff
+
+Larger features are written up as self-contained specs in `docs/plans/` so they
+can be implemented by a local model without loading the whole repo into context.
+
+`start-impl.sh` opens the opencode TUI with a small preloaded prompt that points
+at the plan file, defaulting to whatever model your LM Studio server exposes:
+
+```bash
+# 1. In LM Studio: start the Local Server and load a coder model
+#    (suggested: 8-16K context, K/V cache Q8, prompt batch 256-512)
+# 2. Confirm opencode can see it:
+opencode models lmstudio
+# 3. Hand off a plan (press Enter to send the prefilled prompt):
+./start-impl.sh docs/plans/favorites.md
+```
+
+The model can be pinned explicitly via an argument or the `OPENCODE_IMPL_MODEL`
+environment variable:
+
+```bash
+./start-impl.sh docs/plans/favorites.md lmstudio/qwen2.5-coder-14b-instruct
+```
 
 ## Tests
 

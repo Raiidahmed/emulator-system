@@ -229,6 +229,8 @@ def main():
     play_parser.add_argument("system", help="System (e.g. nes, snes, gba)")
     play_parser.add_argument("game", help="Game name (partial match supported)")
 
+    sub.add_parser("favorites", aliases=["favs"], help="List favorite games")
+
     args = parser.parse_args()
 
     if args.command in {"systems", "list-systems"}:
@@ -237,6 +239,15 @@ def main():
         list_games(args.system)
     elif args.command in {"play", "launch"}:
         launch(args.system, args.game)
+    elif args.command in {"favorites", "favs"}:
+        from src.browser import favorite_games
+        systems = get_systems()
+        favs = favorite_games(systems)
+        if not favs:
+            print("No favorites yet. Star games in the browser with [f].")
+        else:
+            for key, info, rom in favs:
+                print(f"  {rom.stem}  ({info['name']})")
     else:
         parser.print_help()
 
